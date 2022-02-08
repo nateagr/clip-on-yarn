@@ -1,8 +1,11 @@
 import io
+import os
 from clip.model import convert_weights, CLIP
-from clip.clip import tokenize
+from clip.clip import tokenize, build_model
 from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, RandomResizedCrop
+import torch
+from cluster_pack import filesystem
 
 
 def _convert_image_to_rgb(image):
@@ -55,11 +58,24 @@ def load_model(precision):
     return model
 
 
+def load_pretrained_model(model_hdfs_path: str, download_root: str, use_gpu: bool):
+    if not os.path.exists(download_root):
+        os.mkdir(download_root)
+    local_model_path = os.path.join(download_root, "model-ViT-B-32.pt")
+    fs, _ = filesystem.resolve_filesystem_and_path(local_model_path)
+    fs.get(model_hdfs_path, local_model_path)
+    model = torch.jit.load(local_model_path, map_location="cpu").eval()
+    model = build_model(model.state_dict()).to("cpu")
+    if not use_gpu:
+        model.float()
+    return model
+
+
 def preprocessing(n_px: int, is_train: bool):
     preprocess_img = transform(n_px, is_train)
     def _preprocess_fn(img_text):
-        image, text = img_text
-        image_tensor = preprocess_img(Image.open(io.BytesIO(image)))
-        text_tensor = tokenize([text], truncate=True)[0]
+        images, texts = img_text
+        image_tensor = torch.stack([preprocess_img(Image.open(io.BytesIO(img.as_py()))) for img in images])
+        text_tensor = torch.stack([tokenize([text.as_py()], truncate=True)[0] for text in texts])
         return image_tensor, text_tensor
     return _preprocess_fn

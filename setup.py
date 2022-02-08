@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import glob
 import setuptools
 import os
 from typing import List
@@ -17,7 +16,7 @@ def _read_reqs(relpath: str) -> List[str]:
 
 
 setuptools.setup(
-    name='thx',
+    name='clip_on_yarn',
     version="0.0.1",
     install_requires=_read_reqs("requirements.txt"),
     tests_require=_read_reqs("tests-requirements.txt"),

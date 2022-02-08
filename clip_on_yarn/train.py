@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 
@@ -108,23 +109,24 @@ def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, preci
         batch_time = time.perf_counter() - end
         end = time.perf_counter()
 
-        if rank == 0 and (i % 100) == 0:
+        if (i % 100) == 0:
             num_samples = i * len(images) * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
-                f"Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
+                f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
                 f"Loss: {total_loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}"
                 f"\tLR: {optimizer.param_groups[0]['lr']:5f}\tlogit_scale {model.module.logit_scale.data:.3f}"
             )
 
-            log_data = {
-                "loss": total_loss.item(),
-                "data_time": data_time,
-                "batch_time": batch_time,
-                "scale":  model.module.logit_scale.data.item(),
-                "lr": optimizer.param_groups[0]["lr"]
-            }
+            if rank == 0:
+                log_data = {
+                    "loss": total_loss.item(),
+                    "data_time": data_time,
+                    "batch_time": batch_time,
+                    "scale":  model.module.logit_scale.data.item(),
+                    "lr": optimizer.param_groups[0]["lr"]
+                }
 
-            for name, val in log_data.items():
-                name = "train/" + name
-                tb_writer.add_scalar(name, val, current_step)
+                for name, val in log_data.items():
+                    name = "train/" + name
+                    tb_writer.add_scalar(name, val, current_step)

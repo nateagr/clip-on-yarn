@@ -10,8 +10,18 @@ import torch.distributed as dist
 logger = logging.getLogger()
 
 
+def model_inference(model, images, texts):
+    image_features = model.encode_image(images)
+    text_features = model.encode_text(texts)
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    return image_features, text_features, model.logit_scale.exp()
+
+
 def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
-    image_features, text_features, logit_scale = model(images, texts)
+    images = images.reshape(images.shape[1:])
+    texts = texts.reshape(texts.shape[1:])
+    image_features, text_features, logit_scale = model_inference(model.module, images, texts)
     logit_scale = logit_scale.mean()
     rank = dist.get_rank()
     if aggregate:

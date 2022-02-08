@@ -1,11 +1,10 @@
-from clip.clip import _transform
 import torch
 from torch.cuda.amp import GradScaler
 from tf_yarn.pytorch import run_on_yarn, TaskSpec, NodeLabel, PytorchExperiment, DataLoaderArgs
 
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
-from clip_on_yarn.model import load_model, preprocessing
+from clip_on_yarn.model import load_model, preprocessing, transform
 from clip_on_yarn.parquet import ParquetDataset
 
 
@@ -32,29 +31,28 @@ def training_loop(
     aggregate = True # whether to gather all image and text embeddings 
         
     total_steps = len(trainloader) * n_epochs
-    preprocess_train = _transform(model.module.visual.input_resolution)
-    preprocess_val = _transform(model.module.visual.input_resolution)
+    preprocess_train = transform(model.module.visual.input_resolution, True)
+    preprocess_val = transform(model.module.visual.input_resolution, False)
     optimizer = get_adamw_optimize(model.module, weight_decay, learning_rate, beta1, beta2, eps)
     scaler = GradScaler() if precision == "amp" else None
     scheduler = cosine_lr(optimizer, learning_rate, warmup, total_steps)
     
     start_epoch = 0
     for epoch in range(start_epoch, n_epochs):
-        trainloader.sampler.set_epoch(epoch)
+        # trainloader.sampler.set_epoch(epoch)
         train(model, trainloader, epoch, optimizer, scaler, scheduler, device, precision, aggregate, tb_writer)
 
 
 def experiment_fn():
-    trainset_path = "hdfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
-    trainset = ParquetDataset(trainset_path).map(preprocessing)
-
     model = load_model("fp32")
-    
+    trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
+    preprocess_fn = preprocessing(model.visual.input_resolution, True)
+    trainset = ParquetDataset(trainset_path, 4826162, 32).map(preprocess_fn)
     return PytorchExperiment(
         model=model,
         train_fn=training_loop,
         train_dataset=trainset,
-        dataloader_args=DataLoaderArgs(batch_size=256, num_workers=0),
+        dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0),
         n_workers_per_executor=2
     )
 

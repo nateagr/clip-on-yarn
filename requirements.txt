@@ -1,6 +1,6 @@
 torch
+torchvision
 clip-anytorch
-fsspec
-fastparquet
+pyarrow
 pillow
 tf-yarn

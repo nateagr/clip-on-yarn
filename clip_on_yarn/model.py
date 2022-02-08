@@ -1,12 +1,30 @@
-from clip.model import convert_weights, CLIP
 import io
-
-from clip.clip import _transform
+from clip.model import convert_weights, CLIP
 from clip.clip import tokenize
 from PIL import Image
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, RandomResizedCrop
 
 
-preprocess_img = _transform(224)
+def _convert_image_to_rgb(image):
+    return image.convert("RGB")
+
+def transform(n_px: int, is_train: bool):
+    normalize = Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+    if is_train:
+        return Compose([
+            RandomResizedCrop(n_px, scale=(0.9, 1.0), interpolation=Image.BICUBIC),
+            _convert_image_to_rgb,
+            ToTensor(),
+            normalize,
+        ])
+    else:
+        return Compose([
+            Resize(n_px, interpolation=Image.BICUBIC),
+            CenterCrop(n_px),
+            _convert_image_to_rgb,
+            ToTensor(),
+            normalize,
+        ])
 
 
 def _convert_models_to_fp32(model):
@@ -37,8 +55,11 @@ def load_model(precision):
     return model
 
 
-def preprocessing(img_text):
-    image, text = img_text
-    image_tensor = preprocess_img(Image.open(io.BytesIO(image)))
-    text_tensor = tokenize([text], truncate=True)[0]
-    return image_tensor, text_tensor
+def preprocessing(n_px: int, is_train: bool):
+    preprocess_img = transform(n_px, is_train)
+    def _preprocess_fn(img_text):
+        image, text = img_text
+        image_tensor = preprocess_img(Image.open(io.BytesIO(image)))
+        text_tensor = tokenize([text], truncate=True)[0]
+        return image_tensor, text_tensor
+    return _preprocess_fn

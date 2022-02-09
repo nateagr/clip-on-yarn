@@ -55,7 +55,7 @@ def training_loop(
 
 def experiment_fn():
     model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
-    model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True))
+    model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
     trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
     preprocess_fn = preprocessing(model.visual.input_resolution, True)
     trainset = ParquetDataset(trainset_path, 4826162, 32).map(preprocess_fn)

@@ -8,6 +8,20 @@ import torch
 from cluster_pack import filesystem
 
 
+vit_b_32_config = {
+    "embed_dim": 512,
+    "image_resolution": 224,
+    "vision_layers": 12,
+    "vision_width": 768,
+    "vision_patch_size": 32,
+    "context_length": 77,
+    "vocab_size": 49408,
+    "transformer_width": 512,
+    "transformer_heads": 8,
+    "transformer_layers": 12
+}
+
+
 def _convert_image_to_rgb(image):
     return image.convert("RGB")
 
@@ -37,20 +51,8 @@ def _convert_models_to_fp32(model):
             p.grad.data = p.grad.data.float()
 
 
-def load_model(precision):
-    vit_b_32_config = {
-        "embed_dim": 512,
-        "image_resolution": 224,
-        "vision_layers": 12,
-        "vision_width": 768,
-        "vision_patch_size": 32,
-        "context_length": 77,
-        "vocab_size": 49408,
-        "transformer_width": 512,
-        "transformer_heads": 8,
-        "transformer_layers": 12
-    }
-    model = CLIP(**vit_b_32_config)
+def load_model(precision, model_config):
+    model = CLIP(**model_config)
     if precision == "amp" or precision == "fp32":
         _convert_models_to_fp32(model)
     elif precision == "fp16":
@@ -61,8 +63,9 @@ def load_model(precision):
 def load_pretrained_model(model_hdfs_path: str, download_root: str, use_gpu: bool):
     if not os.path.exists(download_root):
         os.mkdir(download_root)
-    local_model_path = os.path.join(download_root, "model-ViT-B-32.pt")
-    fs, _ = filesystem.resolve_filesystem_and_path(local_model_path)
+    model_name = os.path.basename(model_hdfs_path)
+    local_model_path = os.path.join(download_root, model_name)
+    fs, _ = filesystem.resolve_filesystem_and_path(model_hdfs_path)
     fs.get(model_hdfs_path, local_model_path)
     model = torch.jit.load(local_model_path, map_location="cpu").eval()
     model = build_model(model.state_dict()).to("cpu")

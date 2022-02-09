@@ -10,8 +10,8 @@ logger = logging.getLogger()
 
 
 class ParquetDataset(IterableDataset):
-    def __init__(self, dataset_path, length, batch_size):
-        self.length = length
+    def __init__(self, dataset_path, num_samples, batch_size):
+        self.num_samples = num_samples
         self.fs, _ = filesystem.resolve_filesystem_and_path(dataset_path)
         self.dataset_file_paths = [
             f for f in self.fs.base_fs.ls(dataset_path) if f.endswith(".parquet")
@@ -25,15 +25,17 @@ class ParquetDataset(IterableDataset):
         for dataset_file_path in self.dataset_file_paths:
             with self.fs.base_fs.open(dataset_file_path) as f:
                 parquet_file = pq.ParquetFile(f)
-                batch = list(parquet_file.iter_batches(batch_size=self.batch_size))
-                batch_size = len(batch)
+                # Drop last batch because all-reduce ops require batches to have the same
+                # sizes
+                batches = list(parquet_file.iter_batches(batch_size=self.batch_size))[-1]
+                n_batches = len(batches)
                 # FIXME: what if batch size is smaller than number of workers ?
-                subbatch_size = batch_size // self.num_workers
-                start = self.worker_id * subbatch_size
-                end = start + subbatch_size if self.worker_id < (self.num_workers - 1) else batch_size
-                logger.info(f"worker_id: {self.worker_id}; batch_size: {batch_size}; start: {start}; end: {end}")
-                for b in batch[start:end]:
+                n_batches_per_worker = n_batches // self.num_workers
+                start = self.worker_id * n_batches_per_worker
+                end = start + n_batches_per_worker
+                logger.info(f"worker_id: {self.worker_id}; n_batches: {n_batches}; start: {start}; end: {end}")
+                for b in batches[start:end]:
                     yield (b.column("image"), b.column("description"))
 
     def __len__(self):
-        return self.length
+        return self.num_samples // self.batch_size // self.num_workers

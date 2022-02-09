@@ -75,7 +75,7 @@ def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, preci
     world_size = dist.get_world_size()
     
     n_batches_per_epoch = len(trainloader)
-    n_samples_per_epoch = len(trainloader.dataset)
+    n_samples_per_epoch = trainloader.dataset.num_samples
     n_done_steps = n_batches_per_epoch * epoch
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):

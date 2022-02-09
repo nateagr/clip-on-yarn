@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 import torch
@@ -8,6 +9,9 @@ from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
 from clip_on_yarn.model import load_pretrained_model, preprocessing, transform
 from clip_on_yarn.parquet import ParquetDataset
+
+
+logger = logging.getLogger()
 
 
 def training_loop(
@@ -31,8 +35,13 @@ def training_loop(
     weight_decay = 0.2
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings 
-        
-    total_steps = len(trainloader) * n_epochs
+    
+    train_steps_per_epoch = len(trainloader)
+    total_steps = train_steps_per_epoch * n_epochs
+    logger.info(
+        f"n_epochs: {n_epochs}; train_steps_per_epoch: {train_steps_per_epoch}; "
+        f"total_steps: {total_steps}"
+    )
     preprocess_train = transform(model.module.visual.input_resolution, True)
     preprocess_val = transform(model.module.visual.input_resolution, False)
     optimizer = get_adamw_optimize(model.module, weight_decay, learning_rate, beta1, beta2, eps)
@@ -41,7 +50,6 @@ def training_loop(
     
     start_epoch = 0
     for epoch in range(start_epoch, n_epochs):
-        # trainloader.sampler.set_epoch(epoch)
         train(model, trainloader, epoch, optimizer, scaler, scheduler, device, precision, aggregate, tb_writer)
 
 
@@ -55,7 +63,7 @@ def experiment_fn():
         model=model,
         train_fn=training_loop,
         train_dataset=trainset,
-        dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0),
+        dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0, shuffle=True),
         n_workers_per_executor=2
     )
 

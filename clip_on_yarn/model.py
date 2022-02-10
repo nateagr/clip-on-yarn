@@ -76,8 +76,8 @@ def load_pretrained_model(model_hdfs_path: str, download_root: str, use_gpu: boo
 
 def preprocessing(n_px: int, is_train: bool):
     preprocess_img = transform(n_px, is_train)
-    def _preprocess_fn(img_text):
-        images, texts = img_text
+    def _preprocess_fn(pyarrow_batch):
+        images, texts = pyarrow_batch.columns
         image_tensor = torch.stack([preprocess_img(Image.open(io.BytesIO(img.as_py()))) for img in images])
         text_tensor = torch.stack([tokenize([text.as_py()], truncate=True)[0] for text in texts])
         return image_tensor, text_tensor

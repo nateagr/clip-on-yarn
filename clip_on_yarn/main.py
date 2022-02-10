@@ -5,12 +5,15 @@ import uuid
 import wandb
 import torch
 from torch.cuda.amp import GradScaler
-from tf_yarn.pytorch import run_on_yarn, TaskSpec, NodeLabel, PytorchExperiment, DataLoaderArgs
+from tf_yarn.pytorch import (
+    run_on_yarn, TaskSpec, NodeLabel, PytorchExperiment,
+    DataLoaderArgs
+)
+from tf_yarn.pytorch.parquet_dataset import ParquetDataset
 
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
 from clip_on_yarn.model import load_pretrained_model, preprocessing, transform
-from clip_on_yarn.parquet import ParquetDataset
 
 
 logger = logging.getLogger()
@@ -79,11 +82,12 @@ def training_loop(
         wandb.finish()
 
 
-def get_experiment_fn(model_hdfs_path, trainset_path, num_samples, batch_size):
+def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
     def _experiment_fn():
         model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
         preprocess_fn = preprocessing(model.visual.input_resolution, True)
-        trainset = ParquetDataset(trainset_path, num_samples, batch_size).map(preprocess_fn)
+        trainset = ParquetDataset(trainset_path, batch_size, columns=["image", "description"]) \
+            .map(preprocess_fn)
         return PytorchExperiment(
             model=model,
             train_fn=training_loop,
@@ -97,10 +101,9 @@ def get_experiment_fn(model_hdfs_path, trainset_path, num_samples, batch_size):
 if __name__ == "__main__":
     model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
     trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
-    num_samples = 4826162
     batch_size = 32
     run_on_yarn(
-        experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, num_samples, batch_size),
+        experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, batch_size),
         task_specs={
             "worker": TaskSpec(memory=48*2**10, vcores=48, instances=2, label=NodeLabel.GPU)
         },

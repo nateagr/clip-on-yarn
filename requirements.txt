@@ -4,3 +4,4 @@ clip-anytorch
 pyarrow
 pillow
 tf-yarn
+wandb

@@ -2,6 +2,7 @@ import os
 import time
 import logging
 
+import wandb
 import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
@@ -66,7 +67,10 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
     return total_loss
 
 
-def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, precision, aggregate, tb_writer):    
+def train(
+    model, trainloader, epoch, optimizer, scaler, scheduler, device,
+    precision, aggregate, tb_writer, enable_wandb
+):    
     model.train()
     loss_img = nn.CrossEntropyLoss().to(device)
     loss_txt = nn.CrossEntropyLoss().to(device)
@@ -75,7 +79,7 @@ def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, preci
     world_size = dist.get_world_size()
     
     n_batches_per_epoch = len(trainloader)
-    n_samples_per_epoch = trainloader.dataset.num_samples
+    n_samples_per_epoch = trainloader.dataset.datapipe.num_samples
     n_done_steps = n_batches_per_epoch * epoch
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):
@@ -110,7 +114,7 @@ def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, preci
         end = time.perf_counter()
 
         if (i % 100) == 0:
-            num_samples = i * len(images) * world_size
+            num_samples = i * images.shape[0] * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
                 f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
@@ -130,3 +134,5 @@ def train(model, trainloader, epoch, optimizer, scaler, scheduler, device, preci
                 for name, val in log_data.items():
                     name = "train/" + name
                     tb_writer.add_scalar(name, val, current_step)
+                    if enable_wandb:
+                        wandb.log({name: val, 'step': current_step})

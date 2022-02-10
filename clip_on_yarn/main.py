@@ -1,6 +1,8 @@
+import os
 import logging
 import uuid
 
+import wandb
 import torch
 from torch.cuda.amp import GradScaler
 from tf_yarn.pytorch import run_on_yarn, TaskSpec, NodeLabel, PytorchExperiment, DataLoaderArgs
@@ -34,7 +36,26 @@ def training_loop(
     eps = 1.0e-6
     weight_decay = 0.2
     warmup = 10000 # number of steps to warm up
-    aggregate = True # whether to gather all image and text embeddings 
+    aggregate = True # whether to gather all image and text embeddings
+    enable_wandb = False
+
+    if rank == 0 and enable_wandb:
+        os.environ["WANDB_API_KEY"] = None # Replace by your API key
+        os.environ["WANDB_ENTITY"] = None # Replace by your entity name
+        os.environ["WANDB_PROJECT"] = "clip-fine-tuning"
+        os.environ["WANDB_CONFIG_DIR"] = "."
+        config = {
+            "n_epochs": n_epochs,
+            "precision": precision,
+            "learning_rate": learning_rate,
+            "beta1": beta1,
+            "beta2": beta2,
+            "eps": eps,
+            "weight_decay": weight_decay,
+            "warmup": warmup,
+            "aggregate": aggregate
+        }
+        wandb.init(config=config, dir=".")
     
     train_steps_per_epoch = len(trainloader)
     total_steps = train_steps_per_epoch * n_epochs
@@ -50,27 +71,36 @@ def training_loop(
     
     start_epoch = 0
     for epoch in range(start_epoch, n_epochs):
-        train(model, trainloader, epoch, optimizer, scaler, scheduler, device, precision, aggregate, tb_writer)
+        train(
+            model, trainloader, epoch, optimizer, scaler, scheduler, device,
+            precision, aggregate, tb_writer, enable_wandb
+        )
+    if rank == 0 and enable_wandb:
+        wandb.finish()
 
 
-def experiment_fn():
-    model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
-    model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
-    trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
-    preprocess_fn = preprocessing(model.visual.input_resolution, True)
-    trainset = ParquetDataset(trainset_path, 4826162, 32).map(preprocess_fn)
-    return PytorchExperiment(
-        model=model,
-        train_fn=training_loop,
-        train_dataset=trainset,
-        dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0, shuffle=True),
-        n_workers_per_executor=2
-    )
+def get_experiment_fn(model_hdfs_path, trainset_path, num_samples, batch_size):
+    def _experiment_fn():
+        model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
+        preprocess_fn = preprocessing(model.visual.input_resolution, True)
+        trainset = ParquetDataset(trainset_path, num_samples, batch_size).map(preprocess_fn)
+        return PytorchExperiment(
+            model=model,
+            train_fn=training_loop,
+            train_dataset=trainset,
+            dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0),
+            n_workers_per_executor=2
+        )
+    return _experiment_fn
 
 
 if __name__ == "__main__":
+    model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
+    trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
+    num_samples = 4826162
+    batch_size = 32
     run_on_yarn(
-        experiment_fn=experiment_fn,
+        experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, num_samples, batch_size),
         task_specs={
             "worker": TaskSpec(memory=48*2**10, vcores=48, instances=2, label=NodeLabel.GPU)
         },

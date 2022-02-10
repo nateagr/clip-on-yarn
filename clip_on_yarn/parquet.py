@@ -27,7 +27,7 @@ class ParquetDataset(IterableDataset):
                 parquet_file = pq.ParquetFile(f)
                 # Drop last batch because all-reduce ops require batches to have the same
                 # sizes
-                batches = list(parquet_file.iter_batches(batch_size=self.batch_size))[-1]
+                batches = list(parquet_file.iter_batches(batch_size=self.batch_size))[:-1]
                 n_batches = len(batches)
                 # FIXME: what if batch size is smaller than number of workers ?
                 n_batches_per_worker = n_batches // self.num_workers

@@ -10,6 +10,7 @@ from tf_yarn.pytorch import (
     DataLoaderArgs
 )
 from tf_yarn.pytorch.parquet_dataset import ParquetDataset
+from tf_yarn.pytorch import model_ckpt
 
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
@@ -41,6 +42,9 @@ def training_loop(
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings
     enable_wandb = False
+    model_save_ckpt_dir = None # Directory where to save model checkpoints
+    n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
+    model_load_ckpt_path = None # Path of a checkpoint to reload
 
     if rank == 0 and enable_wandb:
         os.environ["WANDB_API_KEY"] = None # Replace by your API key
@@ -56,7 +60,10 @@ def training_loop(
             "eps": eps,
             "weight_decay": weight_decay,
             "warmup": warmup,
-            "aggregate": aggregate
+            "aggregate": aggregate,
+            "model_save_ckpt_dir": model_save_ckpt_dir,
+            "n_steps_ckpt": n_steps_ckpt,
+            "model_load_ckpt_path": model_load_ckpt_path
         }
         wandb.init(config=config, dir=".")
     
@@ -71,12 +78,15 @@ def training_loop(
     optimizer = get_adamw_optimize(model.module, weight_decay, learning_rate, beta1, beta2, eps)
     scaler = GradScaler() if precision == "amp" else None
     scheduler = cosine_lr(optimizer, learning_rate, warmup, total_steps)
+
+    if model_load_ckpt_path:
+        model_ckpt.load_ckpt(model_load_ckpt_path, model, optimizer, device)
     
     start_epoch = 0
     for epoch in range(start_epoch, n_epochs):
         train(
             model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, aggregate, tb_writer, enable_wandb
+            precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb
         )
     if rank == 0 and enable_wandb:
         wandb.finish()
@@ -105,7 +115,7 @@ if __name__ == "__main__":
     run_on_yarn(
         experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, batch_size),
         task_specs={
-            "worker": TaskSpec(memory=48*2**10, vcores=48, instances=2, label=NodeLabel.GPU)
+            "worker": TaskSpec(memory=48*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
         },
         queue="ml-gpu",
         pyenv_zip_path="viewfs://root/user/g.racic/envs/pytorch_distributed_env.pex"

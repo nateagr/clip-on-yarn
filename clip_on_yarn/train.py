@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 import torch.distributed as dist
+from tf_yarn.pytorch import model_ckpt
 
 
 logger = logging.getLogger()
@@ -69,7 +70,7 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
 
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, aggregate, tb_writer, enable_wandb
+    precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb
 ):    
     model.train()
     loss_img = nn.CrossEntropyLoss().to(device)
@@ -112,6 +113,9 @@ def train(
 
         batch_time = time.perf_counter() - end
         end = time.perf_counter()
+
+        if (i % n_steps_ckpt) == 0 and model_save_ckpt_dir:
+            model_ckpt.save_ckpt(model_save_ckpt_dir, model, optimizer, epoch)
 
         if (i % 100) == 0:
             num_samples = i * images.shape[0] * world_size

@@ -41,7 +41,7 @@ def training_loop(
     weight_decay = 0.2
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings
-    enable_wandb = False
+    enable_wandb = True
     model_save_ckpt_dir = None # Directory where to save model checkpoints
     n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
     model_load_ckpt_path = None # Path of a checkpoint to reload

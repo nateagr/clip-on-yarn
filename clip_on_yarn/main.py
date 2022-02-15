@@ -41,15 +41,15 @@ def training_loop(
     weight_decay = 0.2
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings
-    enable_wandb = False
+    enable_wandb = True
     model_save_ckpt_dir = None # Directory where to save model checkpoints
     n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
     model_load_ckpt_path = None # Path of a checkpoint to reload
 
     if rank == 0 and enable_wandb:
-        os.environ["WANDB_API_KEY"] = None # Replace by your API key
-        os.environ["WANDB_ENTITY"] = None # Replace by your entity name
-        os.environ["WANDB_PROJECT"] = "clip-fine-tuning"
+        os.environ["WANDB_API_KEY"] = "6a9bec2b43987680ed38f09475e0f787f69487fb" # Replace by your API key
+        os.environ["WANDB_ENTITY"] = "guillaume-lagarde" # Replace by your entity name
+        os.environ["WANDB_PROJECT"] = "clip-finetuning"
         os.environ["WANDB_CONFIG_DIR"] = "."
         config = {
             "n_epochs": n_epochs,
@@ -100,7 +100,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
             .map(preprocess_fn)
         return PytorchExperiment(
             model=model,
-            train_fn=training_loop,
+            train_fn=training_loop, 
             train_dataset=trainset,
             dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0),
             n_workers_per_executor=2
@@ -110,13 +110,14 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
 
 if __name__ == "__main__":
     model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
+    #trainset_path = "viewfs://root/user/cailimage/prod/image-text-pipeline/EU/prediction/clip/embeddings/day=20220207000000"
     trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
     batch_size = 32
     run_on_yarn(
         experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, batch_size),
         task_specs={
-            "worker": TaskSpec(memory=48*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
+            "worker": TaskSpec(memory=48*2**10, vcores=80, instances=10, label=NodeLabel.GPU)
         },
         queue="ml-gpu",
-        pyenv_zip_path="viewfs://root/user/g.racic/envs/pytorch_distributed_env.pex"
+        pyenv_zip_path="viewfs://root/user/g.lagarde/envs/.fork_clip.pex"
     )

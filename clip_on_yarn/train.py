@@ -93,7 +93,7 @@ def train(
         images = images.to(device, non_blocking=True)
         texts = texts.to(device, non_blocking=True)
 
-        batch_size = images.shape[1]
+        batch_size_per_gpu = images.shape[1]
 
         data_time = time.time() - end
 
@@ -120,7 +120,7 @@ def train(
             model_ckpt.save_ckpt(model_save_ckpt_dir, model, optimizer, epoch)
 
         if (i % 100) == 0:
-            num_samples = i * batch_size * world_size
+            num_samples = i * batch_size_per_gpu * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
                 f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
@@ -133,9 +133,9 @@ def train(
                     "loss": total_loss.item(),
                     "data_time": data_time,
                     "batch_time": batch_time,
-                    "batch_size": world_size*batch_size,
+                    "batch_size": world_size*batch_size_per_gpu,
                     "number_of_gpus": world_size,
-                    "samples_second": (world_size * batch_size) / batch_time,
+                    "samples_second": (world_size * batch_size_per_gpu) / batch_time,
                     "scale":  model.module.logit_scale.data.item(),
                     "lr": optimizer.param_groups[0]["lr"]
                 }

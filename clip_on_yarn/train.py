@@ -1,6 +1,8 @@
 import os
 import time
 import logging
+from contextlib import contextmanager
+import uuid
 
 import wandb
 import torch
@@ -70,8 +72,8 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
 
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb
-):    
+    precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+):
     model.train()
     loss_img = nn.CrossEntropyLoss().to(device)
     loss_txt = nn.CrossEntropyLoss().to(device)
@@ -82,6 +84,10 @@ def train(
     n_batches_per_epoch = len(trainloader)
     n_samples_per_epoch = trainloader.dataset.datapipe.num_samples
     n_done_steps = n_batches_per_epoch * epoch
+
+    if profiler:
+        profiler.start()
+
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):
         current_step = n_done_steps +  i
@@ -140,3 +146,28 @@ def train(
                     tb_writer.add_scalar(name, val, current_step)
                     if enable_wandb:
                         wandb.log({name: val, 'step': current_step})
+
+        if profiler:
+            profiler.step()
+    
+    if profiler:
+        profiler.stop()
+
+
+@contextmanager
+def with_profiler():
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA],
+        schedule=torch.profiler.schedule(
+            wait=1,
+            warmup=1,
+            active=3,
+            repeat=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./profiling_result', worker_name='worker0'),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+    ) as p:
+        yield p

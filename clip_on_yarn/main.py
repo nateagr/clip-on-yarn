@@ -1,5 +1,6 @@
 import os
 import logging
+from posixpath import basename
 import uuid
 
 import wandb
@@ -15,6 +16,7 @@ from tf_yarn.pytorch import model_ckpt
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
 from clip_on_yarn.model import load_pretrained_model, preprocessing, transform
+from clip_on_yarn.hdfs import upload_dir
 
 
 logger = logging.getLogger()
@@ -45,6 +47,9 @@ def training_loop(
     model_save_ckpt_dir = None # Directory where to save model checkpoints
     n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
     model_load_ckpt_path = None # Path of a checkpoint to reload
+    profiling_local_dir = None # f"profiling_result_{str(uuid.uuid4())}"
+    profiling_hdfs_dir = os.path.join("viewfs://prod-am6/user/g.racic", profiling_local_dir) \
+        if profiling_local_dir else None
 
     if rank == 0 and enable_wandb:
         os.environ["WANDB_API_KEY"] = None # Replace by your API key
@@ -81,15 +86,35 @@ def training_loop(
 
     if model_load_ckpt_path:
         model_ckpt.load_ckpt(model_load_ckpt_path, model, optimizer, device)
+
+    profiler = torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA],
+        schedule=torch.profiler.schedule(
+            wait=1,
+            warmup=1,
+            active=20,
+            repeat=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(profiling_local_dir, worker_name=f'worker{rank}'),
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True
+    ) if profiling_local_dir else None
     
     start_epoch = 0
-    for epoch in range(start_epoch, n_epochs):
-        train(
-            model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb
-        )
+    with model.no_sync():
+        for epoch in range(start_epoch, n_epochs):
+            train(
+                model, trainloader, epoch, optimizer, scaler, scheduler, device,
+                precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+            )
     if rank == 0 and enable_wandb:
         wandb.finish()
+
+    if profiling_local_dir:
+        logger.info("Uploading profiling data to HDFS")
+        upload_dir(profiling_local_dir, profiling_hdfs_dir)
 
 
 def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):

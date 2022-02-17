@@ -1,6 +1,5 @@
 import os
 import logging
-from posixpath import basename
 import uuid
 
 import wandb

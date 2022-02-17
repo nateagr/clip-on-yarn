@@ -86,6 +86,8 @@ def train(
     if profiler:
         profiler.start()
 
+    logging_n_steps = 100
+    batch_time_acc = 0
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):
         batch_size = images.shape[1]
@@ -117,12 +119,13 @@ def train(
         model.module.logit_scale.data = torch.clamp(model.module.logit_scale.data, 0, 4.6052)
 
         batch_time = time.perf_counter() - end
+        batch_time_acc += batch_time
         end = time.perf_counter()
 
         if (i % n_steps_ckpt) == 0 and model_save_ckpt_dir:
             model_ckpt.save_ckpt(model_save_ckpt_dir, model, optimizer, epoch)
 
-        if (i % 100) == 0:
+        if (i % logging_n_steps) == 0:
             num_samples = i * batch_size * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
@@ -138,7 +141,7 @@ def train(
                     "batch_time": batch_time,
                     "scale":  model.module.logit_scale.data.item(),
                     "lr": optimizer.param_groups[0]["lr"],
-                    "samples_per_second": (world_size * batch_size) / batch_time
+                    "samples_per_second": world_size * batch_size * logging_n_steps / batch_time_acc
                 }
 
                 for name, val in log_data.items():
@@ -146,6 +149,8 @@ def train(
                     tb_writer.add_scalar(name, val, current_step)
                     if enable_wandb:
                         wandb.log({name: val, 'step': current_step})
+
+            batch_time_acc = 0
 
         if profiler:
             profiler.step()

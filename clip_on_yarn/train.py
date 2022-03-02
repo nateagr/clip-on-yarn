@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 import torch.distributed as dist
+import torch.distributed.nn
 from tf_yarn.pytorch import model_ckpt
 
 
@@ -21,11 +22,11 @@ def model_inference(model, images, texts):
     return image_features, text_features, model.logit_scale.exp()
 
 
-def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
+def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device, sharded_loss= True):
     image_features, text_features, logit_scale = model_inference(model.module, images, texts)
     logit_scale = logit_scale.mean()
     rank = dist.get_rank()
-    if aggregate:
+    if aggregate and not sharded_loss:
         world_size = dist.get_world_size()
 
         # We gather tensors from all gpus to get more negatives to contrast with.
@@ -52,6 +53,12 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
         # this is needed to send gradients back everywhere.
         logits_per_image = logit_scale * all_image_features @ all_text_features.t()
         logits_per_text = logits_per_image.t()
+
+    elif aggregate and sharded_loss:
+         all_image_features = torch.cat(dist.nn.all_gather(image_features))
+         all_text_features = torch.cat(dist.nn.all_gather(text_features))
+         logits_per_image = logit_scale * image_features @ all_text_features.t()
+         logits_per_text = logit_scale * text_features @ all_image_features.t()
 
     else:
         logits_per_image = logit_scale * image_features @ text_features.t()

@@ -22,8 +22,6 @@ def model_inference(model, images, texts):
 
 
 def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device):
-    images = images.reshape(images.shape[1:])
-    texts = texts.reshape(texts.shape[1:])
     image_features, text_features, logit_scale = model_inference(model.module, images, texts)
     logit_scale = logit_scale.mean()
     rank = dist.get_rank()
@@ -80,7 +78,7 @@ def train(
     world_size = dist.get_world_size()
     
     n_batches_per_epoch = len(trainloader)
-    n_samples_per_epoch = trainloader.dataset.datapipe.num_samples
+    n_samples_per_epoch = len(trainloader.dataset) * world_size
     n_done_steps = n_batches_per_epoch * epoch
 
     if profiler:
@@ -90,13 +88,14 @@ def train(
     batch_time_acc = 0
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):
-        batch_size = images.shape[1]
+        batch_size = images.shape[0]
         current_step = n_done_steps +  i
         scheduler(current_step)
 
         optimizer.zero_grad()
 
-        images, texts = batch
+        images = batch['image_tensor']
+        texts = batch['text_tokens']
         images = images.to(device, non_blocking=True)
         texts = texts.to(device, non_blocking=True)
 

@@ -1,6 +1,7 @@
 import os
 import logging
 import uuid
+import fsspec
 
 import wandb
 import torch
@@ -9,12 +10,15 @@ from tf_yarn.pytorch import (
     run_on_yarn, TaskSpec, NodeLabel, PytorchExperiment,
     DataLoaderArgs
 )
-from tf_yarn.pytorch.parquet_dataset import ParquetDataset
 from tf_yarn.pytorch import model_ckpt
+import torch.distributed as dist
+from webdataset.extradatasets import FakeLength
 
+
+from clip_on_yarn.dataset import create_webdataset
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
-from clip_on_yarn.model import load_pretrained_model, preprocessing, transform
+from clip_on_yarn.model import load_pretrained_model, transform
 from clip_on_yarn.hdfs import upload_dir
 
 
@@ -102,12 +106,11 @@ def training_loop(
     ) if profiling_local_dir else None
     
     start_epoch = 0
-    with model.no_sync():
-        for epoch in range(start_epoch, n_epochs):
-            train(
-                model, trainloader, epoch, optimizer, scaler, scheduler, device,
-                precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
-            )
+    for epoch in range(start_epoch, n_epochs):
+        train(
+            model, trainloader, epoch, optimizer, scaler, scheduler, device,
+            precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+        )
     if rank == 0 and enable_wandb:
         wandb.finish()
 
@@ -119,14 +122,18 @@ def training_loop(
 def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
     def _experiment_fn():
         model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
-        preprocess_fn = preprocessing(model.visual.input_resolution, True)
-        trainset = ParquetDataset(trainset_path, batch_size, columns=["image", "description"]) \
-            .map(preprocess_fn)
+        
+        worker_id = dist.get_rank() if dist.is_initialized() else 0
+        num_workers = dist.get_world_size() if dist.is_initialized() else 1
+        
+        trainset_subset = [path for n, path in enumerate(trainset_path) if n % num_workers == worker_id]
+        webdataset = create_webdataset(trainset_subset, transform(224, True))
+        wds = FakeLength(webdataset, 419_000 * len(trainset_subset))
         return PytorchExperiment(
             model=model,
             train_fn=training_loop,
-            train_dataset=trainset,
-            dataloader_args=DataLoaderArgs(batch_size=1, num_workers=0),
+            train_dataset=wds,
+            dataloader_args=DataLoaderArgs(batch_size=batch_size, num_workers=8, pin_memory=False),
             n_workers_per_executor=2
         )
     return _experiment_fn
@@ -134,12 +141,15 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
 
 if __name__ == "__main__":
     model_hdfs_path = "viewfs://root/user/g.racic/ViT-B-32.pt"
-    trainset_path = "viewfs://root/user/g.racic/filtered-image-text-pipeline/EU/resized-images/day=20220130000000"
+    trainset_path = "hdfs://root/user/u.tanielian/EU_img_titles/"
+    fs, path = fsspec.core.url_to_fs(trainset_path)
+    url_paths = fs.ls(path, detail=False)
+    url_paths = ["pipe:hdfs dfs -cat viewfs://root"+ path for path in url_paths]
     batch_size = 32
     run_on_yarn(
-        experiment_fn=get_experiment_fn(model_hdfs_path, trainset_path, batch_size),
+        experiment_fn=get_experiment_fn(model_hdfs_path, url_paths, batch_size),
         task_specs={
-            "worker": TaskSpec(memory=48*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
+            "worker": TaskSpec(memory=72*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
         },
         queue="ml-gpu",
         pyenv_zip_path="viewfs://root/user/g.racic/envs/pytorch_distributed_env.pex"

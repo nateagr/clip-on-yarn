@@ -5,3 +5,4 @@ pyarrow
 pillow
 tf-yarn
 wandb
+webdataset==0.1.103

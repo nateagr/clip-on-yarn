@@ -95,7 +95,6 @@ def train(
     batch_time_acc = 0
     end = time.perf_counter()
     for i, batch in enumerate(trainloader):
-        batch_size = images.shape[0]
         current_step = n_done_steps +  i
         scheduler(current_step)
 
@@ -106,6 +105,7 @@ def train(
         images = images.to(device, non_blocking=True)
         texts = texts.to(device, non_blocking=True)
 
+        batch_size = images.shape[0]
         data_time = time.time() - end
 
         # with automatic mixed precision.

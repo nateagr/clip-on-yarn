@@ -46,7 +46,7 @@ def training_loop(
     weight_decay = 0.2
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings
-    enable_wandb = False
+    enable_wandb = True
     model_save_ckpt_dir = None # Directory where to save model checkpoints
     n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
     model_load_ckpt_path = None # Path of a checkpoint to reload
@@ -55,10 +55,10 @@ def training_loop(
         if profiling_local_dir else None
 
     if rank == 0 and enable_wandb:
-        os.environ["WANDB_API_KEY"] = None # Replace by your API key
-        os.environ["WANDB_ENTITY"] = None # Replace by your entity name
+        os.environ["WANDB_API_KEY"] = "967b19b9951506ff2f1c803157951df8accf50f7" # Replace by your API key
+        os.environ["WANDB_ENTITY"] = "nateagr" # Replace by your entity name
         os.environ["WANDB_PROJECT"] = "clip-fine-tuning"
-        os.environ["WANDB_CONFIG_DIR"] = "."
+        os.environ["WANDB_CONFIG_DIR"] = str(uuid.uuid4())
         config = {
             "n_epochs": n_epochs,
             "precision": precision,
@@ -73,7 +73,7 @@ def training_loop(
             "n_steps_ckpt": n_steps_ckpt,
             "model_load_ckpt_path": model_load_ckpt_path
         }
-        wandb.init(config=config, dir=".")
+        wandb.init(config=config, dir=str(uuid.uuid4()))
     
     train_steps_per_epoch = len(trainloader)
     total_steps = train_steps_per_epoch * n_epochs
@@ -134,7 +134,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
             train_fn=training_loop,
             train_dataset=wds,
             dataloader_args=DataLoaderArgs(batch_size=batch_size, num_workers=8, pin_memory=False),
-            n_workers_per_executor=2
+            n_workers_per_executor=1
         )
     return _experiment_fn
 
@@ -145,12 +145,12 @@ if __name__ == "__main__":
     fs, path = fsspec.core.url_to_fs(trainset_path)
     url_paths = fs.ls(path, detail=False)
     url_paths = ["pipe:hdfs dfs -cat viewfs://root"+ path for path in url_paths]
-    batch_size = 32
+    batch_size = 128
     run_on_yarn(
         experiment_fn=get_experiment_fn(model_hdfs_path, url_paths, batch_size),
         task_specs={
-            "worker": TaskSpec(memory=72*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
+            "worker": TaskSpec(memory=48*2**10, vcores=80, instances=2, label=NodeLabel.GPU)
         },
         queue="ml-gpu",
-        pyenv_zip_path="viewfs://root/user/g.racic/envs/pytorch_distributed_env.pex"
+        pyenv_zip_path="viewfs://root/user/g.racic/envs/clip_env.pex"
     )

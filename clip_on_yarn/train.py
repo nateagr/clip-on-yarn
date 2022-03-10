@@ -59,7 +59,24 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device, sharde
          all_text_features = torch.cat(dist.nn.all_gather(text_features))
          logits_per_image = logit_scale * image_features @ all_text_features.t()
          logits_per_text = logit_scale * text_features @ all_image_features.t()
-
+         if torch.isnan(image_features).any():
+             torch.set_printoptions(profile="full")
+             print(image_features)
+             raise ValueError("NaN detected in local image embeddings !!!")
+         if torch.isnan(text_features).any():
+             torch.set_printoptions(profile="full")
+             print(text_features)
+             raise ValueError("NaN detected in local text embeddings")
+         if torch.isnan(all_image_features).any():
+             torch.set_printoptions(profile="full")
+             print(all_image_features)
+             raise ValueError("NaN detected in gathered image embeddings !!!")
+         if torch.isnan(all_text_features).any():
+             torch.set_printoptions(profile="full")
+             print(all_text_features)
+             raise ValueError("NaN detected in gathered text embeddings !!!")
+         if torch.isnan(logits_per_image).any() or torch.isnan(logits_per_text).any():
+             raise ValueError("NaN detected in logits !!!")
     else:
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
@@ -88,78 +105,44 @@ def train(
     n_samples_per_epoch = len(trainloader.dataset) * world_size
     n_done_steps = n_batches_per_epoch * epoch
 
-    if profiler:
-        profiler.start()
-
-    logging_n_steps = 100
-    batch_time_acc = 0
-    end = time.perf_counter()
-    for i, batch in enumerate(trainloader):
+    logging_n_steps = 50
+    for i in range(n_batches_per_epoch):
+    #for i, batch in enumerate(trainloader):
         current_step = n_done_steps +  i
         scheduler(current_step)
 
         optimizer.zero_grad()
 
-        images = batch['image_tensor']
-        texts = batch['text_tokens']
-        images = images.to(device, non_blocking=True)
-        texts = texts.to(device, non_blocking=True)
+        #images = batch['image_tensor']
+        #texts = batch['text_tokens']
+        images = torch.rand([32, 3, 224, 224]).to(device, non_blocking=True) #images.to(device, non_blocking=True)
+        texts = torch.randint(1, 100, size=[32, 77]).to(device, non_blocking=True) #texts.to(device, non_blocking=True)
 
         batch_size = images.shape[0]
-        data_time = time.time() - end
 
-        # with automatic mixed precision.
-        if precision == "amp":
-            with autocast():
-                total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
-                scaler.scale(total_loss).backward()
-                scaler.step(optimizer)
-            scaler.update()
-
-        else:
-            total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
-            total_loss.backward()
-            optimizer.step()
+        total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
+        total_loss.backward()
+        optimizer.step()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
         model.module.logit_scale.data = torch.clamp(model.module.logit_scale.data, 0, 4.6052)
 
-        batch_time = time.perf_counter() - end
-        batch_time_acc += batch_time
-        end = time.perf_counter()
-
-        if (i % n_steps_ckpt) == 0 and model_save_ckpt_dir:
-            model_ckpt.save_ckpt(model_save_ckpt_dir, model, optimizer, epoch)
-
         if (i % logging_n_steps) == 0:
+            os.system("nvidia-smi")
+            logger.info(f"memory_allocated: {torch.cuda.memory_allocated()}")
+            logger.info(f"max_memory_allocated: {torch.cuda.max_memory_allocated()}")
+            logger.info(f"memory_reserved: {torch.cuda.memory_reserved()}")
+            logger.info(f"max_memory_reserved: {torch.cuda.max_memory_reserved()}")
+
             num_samples = i * batch_size * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
                 f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
-                f"Loss: {total_loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}"
+                f"Loss: {total_loss.item():.6f}"
                 f"\tLR: {optimizer.param_groups[0]['lr']:5f}\tlogit_scale {model.module.logit_scale.data:.3f}"
             )
+            del num_samples
+        del batch_size
+        del images
+        del texts
 
-            if rank == 0:
-                log_data = {
-                    "loss": total_loss.item(),
-                    "data_time": data_time,
-                    "batch_time": batch_time,
-                    "scale":  model.module.logit_scale.data.item(),
-                    "lr": optimizer.param_groups[0]["lr"],
-                    "samples_per_second": world_size * batch_size * logging_n_steps / batch_time_acc
-                }
-
-                for name, val in log_data.items():
-                    name = "train/" + name
-                    tb_writer.add_scalar(name, val, current_step)
-                    if enable_wandb:
-                        wandb.log({name: val, 'step': current_step})
-
-            batch_time_acc = 0
-
-        if profiler:
-            profiler.step()
-    
-    if profiler:
-        profiler.stop()

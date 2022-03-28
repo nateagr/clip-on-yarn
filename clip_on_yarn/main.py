@@ -35,10 +35,12 @@ def training_loop(
     import torch.backends.cudnn as cudnn
     cudnn.benchmark = True
     cudnn.deterministic = False
+
+    torch.manual_seed(rank)
     
     # Inputs
     n_epochs = 10
-    precision = "fp32"
+    precision = "amp"
     learning_rate = 5.0e-4
     beta1 = 0.9
     beta2 = 0.98
@@ -47,9 +49,8 @@ def training_loop(
     warmup = 10000 # number of steps to warm up
     aggregate = True # whether to gather all image and text embeddings
     enable_wandb = False
-    model_save_ckpt_dir = None # Directory where to save model checkpoints
     n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
-    model_load_ckpt_path = None # Path of a checkpoint to reload
+    model_dir = "viewfs://prod-am6/user/g.racic/clip_fine_tuning" # Directory where model is checkpointed
     profiling_local_dir = None # f"profiling_result_{str(uuid.uuid4())}"
     profiling_hdfs_dir = os.path.join("viewfs://prod-am6/user/g.racic", profiling_local_dir) \
         if profiling_local_dir else None
@@ -69,9 +70,8 @@ def training_loop(
             "weight_decay": weight_decay,
             "warmup": warmup,
             "aggregate": aggregate,
-            "model_save_ckpt_dir": model_save_ckpt_dir,
             "n_steps_ckpt": n_steps_ckpt,
-            "model_load_ckpt_path": model_load_ckpt_path
+            "model_dir": model_dir
         }
         wandb.init(config=config, dir=".")
     
@@ -81,14 +81,14 @@ def training_loop(
         f"n_epochs: {n_epochs}; train_steps_per_epoch: {train_steps_per_epoch}; "
         f"total_steps: {total_steps}"
     )
-    preprocess_train = transform(model.module.visual.input_resolution, True)
-    preprocess_val = transform(model.module.visual.input_resolution, False)
     optimizer = get_adamw_optimize(model.module, weight_decay, learning_rate, beta1, beta2, eps)
     scaler = GradScaler() if precision == "amp" else None
     scheduler = cosine_lr(optimizer, learning_rate, warmup, total_steps)
 
-    if model_load_ckpt_path:
-        model_ckpt.load_ckpt(model_load_ckpt_path, model, optimizer, device)
+    start_epoch = 0
+    if model_dir:
+        ckpt = model_ckpt.load_latest_ckpt(model_dir, model, optimizer, device)
+        start_epoch = ckpt["epoch"]
 
     profiler = torch.profiler.profile(
         activities=[
@@ -105,11 +105,11 @@ def training_loop(
         profile_memory=True
     ) if profiling_local_dir else None
     
-    start_epoch = 0
+    
     for epoch in range(start_epoch, n_epochs):
         train(
             model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+            precision, aggregate, model_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
         )
     if rank == 0 and enable_wandb:
         wandb.finish()

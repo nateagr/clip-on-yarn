@@ -75,7 +75,7 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device, sharde
 
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, aggregate, model_save_ckpt_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+    precision, aggregate, model_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
 ):
     model.train()
     loss_img = nn.CrossEntropyLoss().to(device)
@@ -112,8 +112,8 @@ def train(
         if precision == "amp":
             with autocast():
                 total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
-                scaler.scale(total_loss).backward()
-                scaler.step(optimizer)
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
             scaler.update()
 
         else:
@@ -122,14 +122,13 @@ def train(
             optimizer.step()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
-        model.module.logit_scale.data = torch.clamp(model.module.logit_scale.data, 0, 4.6052)
+        logit_scale = model.module.logit_scale
+        with torch.no_grad():
+            logit_scale.clamp_(0, 4.6052)
 
         batch_time = time.perf_counter() - end
         batch_time_acc += batch_time
         end = time.perf_counter()
-
-        if (i % n_steps_ckpt) == 0 and model_save_ckpt_dir:
-            model_ckpt.save_ckpt(model_save_ckpt_dir, model, optimizer, epoch)
 
         if (i % logging_n_steps) == 0:
             num_samples = i * batch_size * world_size
@@ -163,3 +162,6 @@ def train(
     
     if profiler:
         profiler.stop()
+
+    if model_dir:
+        model_ckpt.save_ckpt(model_dir, model, optimizer, epoch)

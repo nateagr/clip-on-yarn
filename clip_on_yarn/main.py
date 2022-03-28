@@ -128,7 +128,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
         
         trainset_subset = [path for n, path in enumerate(trainset_path) if n % num_workers == worker_id]
         webdataset = create_webdataset(trainset_subset, transform(224, True))
-        wds = FakeLength(webdataset, 419_000 * len(trainset_subset))
+        wds = FakeLength(webdataset, 140000 * len(trainset_subset))
         return PytorchExperiment(
             model=model,
             train_fn=training_loop,

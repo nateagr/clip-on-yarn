@@ -85,7 +85,7 @@ def train(
     world_size = dist.get_world_size()
     
     n_batches_per_epoch = len(trainloader)
-    n_samples_per_epoch = len(trainloader.dataset) * world_size
+    n_samples_per_epoch = len(trainloader.dataset)
     n_done_steps = n_batches_per_epoch * epoch
 
     if profiler:
@@ -134,7 +134,7 @@ def train(
             num_samples = i * batch_size * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
-                f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch} ({percent_complete:.0f}%)]\t"
+                f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
                 f"Loss: {total_loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}"
                 f"\tLR: {optimizer.param_groups[0]['lr']:5f}\tlogit_scale {model.module.logit_scale.data:.3f}"
             )

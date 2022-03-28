@@ -2,6 +2,7 @@ import os
 import logging
 import uuid
 import fsspec
+from functools import partial
 
 import wandb
 import torch
@@ -23,6 +24,50 @@ from clip_on_yarn.hdfs import upload_dir
 
 
 logger = logging.getLogger()
+default_config = {
+    "n_epochs": 32,
+    "precision": "fp32",
+    "learning_rate": 5.0e-4,
+    "beta1": 0.9,
+    "beta2": 0.98,
+    "eps": 1.0e-6,
+    "weight_decay": 0.2,
+    "warmup": 10000, # number of steps to warm up
+    "aggregate": True, # whether to gather all image and text embeddings
+    "wandb_config": {
+        "api_key": None,
+        "entity": None,
+        "project": None
+    },
+    "model_dir": None, # Directory where model is checkpointed
+    "profiling_hdfs_dir": None # Directory where profiling results will be written
+}
+
+
+def create_profiler(rank: int, local_dir: str):
+    return torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA],
+        schedule=torch.profiler.schedule(
+            wait=1,
+            warmup=1,
+            active=20,
+            repeat=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(local_dir, worker_name=f'worker{rank}'),
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True
+    )
+
+
+def fill_config(args):
+    if args is None:
+        return default_config
+
+    for name, val in default_config.items():
+        if getattr(args, name) is None:
+            setattr(args, name, val)
 
 
 def training_loop(
@@ -30,50 +75,41 @@ def training_loop(
     trainloader: torch.utils.data.dataloader.DataLoader,
     device: str,
     rank: int,
-    tb_writer
+    tb_writer,
+    args
 ):
     import torch.backends.cudnn as cudnn
     cudnn.benchmark = True
     cudnn.deterministic = False
 
     torch.manual_seed(rank)
-    
-    # Inputs
-    n_epochs = 10
-    precision = "amp"
-    learning_rate = 5.0e-4
-    beta1 = 0.9
-    beta2 = 0.98
-    eps = 1.0e-6
-    weight_decay = 0.2
-    warmup = 10000 # number of steps to warm up
-    aggregate = True # whether to gather all image and text embeddings
-    enable_wandb = False
-    n_steps_ckpt = 2000 # Model will be checkpointed every n_steps_ckpt steps
-    model_dir = "viewfs://prod-am6/user/g.racic/clip_fine_tuning" # Directory where model is checkpointed
-    profiling_local_dir = None # f"profiling_result_{str(uuid.uuid4())}"
-    profiling_hdfs_dir = os.path.join("viewfs://prod-am6/user/g.racic", profiling_local_dir) \
-        if profiling_local_dir else None
 
-    if rank == 0 and enable_wandb:
-        os.environ["WANDB_API_KEY"] = None # Replace by your API key
-        os.environ["WANDB_ENTITY"] = None # Replace by your entity name
-        os.environ["WANDB_PROJECT"] = "clip-fine-tuning"
+    config = fill_config(args)
+    logger.info(f"config: {config}")
+
+    n_epochs = config["n_epochs"]
+    precision = config["precision"]
+    learning_rate = config["learning_rate"]
+    beta1 = config["beta1"]
+    beta2 = config["beta2"]
+    eps = config["eps"]
+    weight_decay = config["weight_decay"]
+    warmup = config["warmup"]
+    aggregate = config["aggregate"]
+    wandb_config = config["wandb_config"]
+    model_dir = config["model_dir"]
+    profiling_hdfs_dir = config["profiling_hdfs_dir"]
+
+    if rank == 0 and wandb_config and wandb_config["api_key"] and wandb_config["entity"] \
+        and wandb_config["project"]:
+        enable_wandb = True
+        os.environ["WANDB_API_KEY"] = wandb_config["api_key"]
+        os.environ["WANDB_ENTITY"] = wandb_config["entity"]
+        os.environ["WANDB_PROJECT"] = wandb_config["project"]
         os.environ["WANDB_CONFIG_DIR"] = "."
-        config = {
-            "n_epochs": n_epochs,
-            "precision": precision,
-            "learning_rate": learning_rate,
-            "beta1": beta1,
-            "beta2": beta2,
-            "eps": eps,
-            "weight_decay": weight_decay,
-            "warmup": warmup,
-            "aggregate": aggregate,
-            "n_steps_ckpt": n_steps_ckpt,
-            "model_dir": model_dir
-        }
         wandb.init(config=config, dir=".")
+    else:
+        enable_wandb = False
     
     train_steps_per_epoch = len(trainloader)
     total_steps = train_steps_per_epoch * n_epochs
@@ -90,36 +126,27 @@ def training_loop(
         ckpt = model_ckpt.load_latest_ckpt(model_dir, model, optimizer, device)
         start_epoch = ckpt["epoch"]
 
-    profiler = torch.profiler.profile(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.CUDA],
-        schedule=torch.profiler.schedule(
-            wait=1,
-            warmup=1,
-            active=20,
-            repeat=2),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(profiling_local_dir, worker_name=f'worker{rank}'),
-        record_shapes=True,
-        with_stack=True,
-        profile_memory=True
-    ) if profiling_local_dir else None
-    
+    if precision == "amp" or precision == "fp32":
+        model.module.float()
+
+    if profiling_hdfs_dir:
+        profiling_local_dir = f"./{str(uuid.uuid4())}"
+        profiler = create_profiler(rank, profiling_local_dir)
     
     for epoch in range(start_epoch, n_epochs):
         train(
             model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, aggregate, model_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+            precision, aggregate, model_dir, tb_writer, enable_wandb, profiler
         )
-    if rank == 0 and enable_wandb:
+    if enable_wandb:
         wandb.finish()
 
-    if profiling_local_dir:
+    if profiling_hdfs_dir and profiling_local_dir:
         logger.info("Uploading profiling data to HDFS")
         upload_dir(profiling_local_dir, profiling_hdfs_dir)
 
 
-def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
+def get_experiment_fn(model_hdfs_path, trainset_path, batch_size, args=None):
     def _experiment_fn():
         model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
         
@@ -131,7 +158,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size):
         wds = FakeLength(webdataset, 140000 * len(trainset_subset))
         return PytorchExperiment(
             model=model,
-            train_fn=training_loop,
+            main_fn=partial(training_loop, args=args),
             train_dataset=wds,
             dataloader_args=DataLoaderArgs(batch_size=batch_size, num_workers=8, pin_memory=False),
             n_workers_per_executor=2

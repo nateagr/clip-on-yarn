@@ -75,7 +75,7 @@ def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device, sharde
 
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, aggregate, model_dir, n_steps_ckpt, tb_writer, enable_wandb, profiler
+    precision, aggregate, model_dir, tb_writer, enable_wandb, profiler
 ):
     model.train()
     loss_img = nn.CrossEntropyLoss().to(device)
@@ -115,7 +115,6 @@ def train(
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
-
         else:
             total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
             total_loss.backward()

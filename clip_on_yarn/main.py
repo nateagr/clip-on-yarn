@@ -64,10 +64,10 @@ def create_profiler(rank: int, local_dir: str):
 def fill_config(args):
     if args is None:
         return default_config
-
-    for name, val in default_config.items():
-        if getattr(args, name) is None:
-            setattr(args, name, val)
+    for name, value in default_config.items():
+        if name not in args:
+            args[name] = value
+    return args
 
 
 def training_loop(
@@ -129,6 +129,7 @@ def training_loop(
     if precision == "amp" or precision == "fp32":
         model.module.float()
 
+    profiler = None
     if profiling_hdfs_dir:
         profiling_local_dir = f"./{str(uuid.uuid4())}"
         profiler = create_profiler(rank, profiling_local_dir)

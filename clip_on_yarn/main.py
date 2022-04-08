@@ -151,12 +151,10 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size, args=None):
     def _experiment_fn():
         model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
         
-        worker_id = dist.get_rank() if dist.is_initialized() else 0
+        webdataset = create_webdataset(trainset_path, transform(224, True))
         num_workers = dist.get_world_size() if dist.is_initialized() else 1
+        wds = FakeLength(webdataset, 140000 * len(trainset_path) / num_workers)
         
-        trainset_subset = [path for n, path in enumerate(trainset_path) if n % num_workers == worker_id]
-        webdataset = create_webdataset(trainset_subset, transform(224, True))
-        wds = FakeLength(webdataset, 140000 * len(trainset_subset))
         return PytorchExperiment(
             model=model,
             main_fn=partial(training_loop, args=args),

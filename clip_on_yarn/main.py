@@ -154,7 +154,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size, args=None):
         
         webdataset = create_webdataset(trainset_path, transform(224, True))
         num_workers = dist.get_world_size() if dist.is_initialized() else 1
-        wds = FakeLength(webdataset, 140000 * len(trainset_path) / num_workers)
+        wds = FakeLength(webdataset, int(140000 * len(trainset_path) / num_workers))
 
         return PytorchExperiment(
             model=model,

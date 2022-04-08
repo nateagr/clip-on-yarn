@@ -121,13 +121,14 @@ def training_loop(
     scaler = GradScaler() if precision == "amp" else None
     scheduler = cosine_lr(optimizer, learning_rate, warmup, total_steps)
 
+    if precision == "amp" or precision == "fp32":
+        model.module.float()
+
     start_epoch = 0
     if model_dir:
         ckpt = model_ckpt.load_latest_ckpt(model_dir, model, optimizer, device)
-        start_epoch = ckpt["epoch"]
-
-    if precision == "amp" or precision == "fp32":
-        model.module.float()
+        if ckpt:
+            start_epoch = ckpt["epoch"]
 
     profiler = None
     if profiling_hdfs_dir:
@@ -154,7 +155,7 @@ def get_experiment_fn(model_hdfs_path, trainset_path, batch_size, args=None):
         webdataset = create_webdataset(trainset_path, transform(224, True))
         num_workers = dist.get_world_size() if dist.is_initialized() else 1
         wds = FakeLength(webdataset, 140000 * len(trainset_path) / num_workers)
-        
+
         return PytorchExperiment(
             model=model,
             main_fn=partial(training_loop, args=args),

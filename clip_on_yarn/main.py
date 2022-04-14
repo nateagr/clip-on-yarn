@@ -129,6 +129,8 @@ def training_loop(
         ckpt = model_ckpt.load_latest_ckpt(model_dir, model, optimizer, device)
         if ckpt:
             start_epoch = ckpt["epoch"]
+            if scaler is not None and 'scaler' in ckpt:
+                scaler.load_state_dict(ckpt['scaler'])
 
     profiler = None
     if profiling_hdfs_dir:
@@ -138,7 +140,7 @@ def training_loop(
     for epoch in range(start_epoch, n_epochs):
         train(
             model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, aggregate, model_dir, tb_writer, enable_wandb, profiler
+            precision, model_dir, tb_writer, enable_wandb, profiler
         )
     if enable_wandb:
         wandb.finish()

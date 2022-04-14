@@ -25,12 +25,12 @@ def cosine_lr(optimizer, base_lr, warmup_length, steps):
 
 
 def get_adamw_optimize(model, weight_decay, learning_rate, beta1, beta2, eps):
-    exclude = lambda n : "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
-    include = lambda n : not exclude(n)
+    exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
+    include = lambda n, p: not exclude(n, p)
 
     named_parameters = list(model.named_parameters())
-    gain_or_bias_params = [p for n, p in named_parameters if exclude(n) and p.requires_grad]
-    rest_params = [p for n, p in named_parameters if include(n) and p.requires_grad]
+    gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
+    rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
     
     return AdamW(
         [

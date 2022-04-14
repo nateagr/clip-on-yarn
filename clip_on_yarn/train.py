@@ -10,6 +10,8 @@ import torch.distributed as dist
 import torch.distributed.nn
 from tf_yarn.pytorch import model_ckpt
 
+from clip_on_yarn.loss import ClipLoss
+
 
 logger = logging.getLogger()
 
@@ -22,67 +24,20 @@ def model_inference(model, images, texts):
     return image_features, text_features, model.logit_scale.exp()
 
 
-def get_loss(model, images, texts, loss_img, loss_txt, aggregate, device, sharded_loss= True):
-    image_features, text_features, logit_scale = model_inference(model.module, images, texts)
-    logit_scale = logit_scale.mean()
-    rank = dist.get_rank()
-    if aggregate and not sharded_loss:
-        world_size = dist.get_world_size()
-
-        # We gather tensors from all gpus to get more negatives to contrast with.
-        gathered_image_features = [
-            torch.zeros_like(image_features) for _ in range(world_size)
-        ]
-        gathered_text_features = [
-            torch.zeros_like(text_features) for _ in range(world_size)
-        ]
-        dist.all_gather(gathered_image_features, image_features)
-        dist.all_gather(gathered_text_features, text_features)
-
-        all_image_features = torch.cat(
-            [image_features]
-            + gathered_image_features[:rank]
-            + gathered_image_features[rank + 1 :]
-        )
-        all_text_features = torch.cat(
-            [text_features]
-            + gathered_text_features[:rank]
-            + gathered_text_features[rank + 1 :]
-        )
-
-        # this is needed to send gradients back everywhere.
-        logits_per_image = logit_scale * all_image_features @ all_text_features.t()
-        logits_per_text = logits_per_image.t()
-
-    elif aggregate and sharded_loss:
-         all_image_features = torch.cat(dist.nn.all_gather(image_features))
-         all_text_features = torch.cat(dist.nn.all_gather(text_features))
-         logits_per_image = logit_scale * image_features @ all_text_features.t()
-         logits_per_text = logit_scale * text_features @ all_image_features.t()
-
-    else:
-        logits_per_image = logit_scale * image_features @ text_features.t()
-        logits_per_text = logit_scale * text_features @ image_features.t()
-
-    ground_truth = torch.arange(len(logits_per_image)).long()
-    ground_truth = ground_truth.to(device, non_blocking=True)
-    total_loss = (
-        loss_img(logits_per_image, ground_truth)
-        + loss_txt(logits_per_text, ground_truth)
-    ) / 2
-    return total_loss
-
-
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, aggregate, model_dir, tb_writer, enable_wandb, profiler
+    precision, model_dir, tb_writer, enable_wandb, profiler, local_loss=True
 ):
     model.train()
-    loss_img = nn.CrossEntropyLoss().to(device)
-    loss_txt = nn.CrossEntropyLoss().to(device)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    loss = ClipLoss(
+        local_loss=local_loss,
+        rank=rank,
+        world_size=world_size
+    )
     
     n_batches_per_epoch = len(trainloader)
     n_samples_per_epoch = len(trainloader.dataset)
@@ -111,19 +66,20 @@ def train(
         # with automatic mixed precision.
         if precision == "amp":
             with autocast():
-                total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
+                image_features, text_features, logit_scale = model_inference(model.module, images, texts)
+                total_loss = loss(image_features, text_features, logit_scale)
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            total_loss = get_loss(model, images, texts, loss_img, loss_txt, aggregate, device)
+            image_features, text_features, logit_scale = model_inference(model.module, images, texts)
+            total_loss = loss(image_features, text_features, logit_scale)
             total_loss.backward()
             optimizer.step()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
-        logit_scale = model.module.logit_scale
         with torch.no_grad():
-            logit_scale.clamp_(0, 4.6052)
+            model.module.logit_scale.clamp_(0, 4.6052)
 
         batch_time = time.perf_counter() - end
         batch_time_acc += batch_time
@@ -163,4 +119,9 @@ def train(
         profiler.stop()
 
     if model_dir:
-        model_ckpt.save_ckpt(model_dir, model, optimizer, epoch)
+        others = dict()
+        if scaler:
+            others["scaler"] = scaler.state_dict()
+        model_ckpt.save_ckpt(
+            model_dir, model, optimizer, epoch, **others
+        )

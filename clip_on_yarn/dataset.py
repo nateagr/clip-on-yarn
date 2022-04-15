@@ -3,6 +3,8 @@ import io
 from functools import partial
 import clip
 import webdataset as wds
+import torch
+from imagenetv2_pytorch import ImageNetV2Dataset
 
 
 def preprocess_dataset(
@@ -66,3 +68,14 @@ def create_webdataset(
     )
     transformed_dataset = filtered_dataset.map(transform_fn, handler=wds.handlers.warn_and_continue)
     return transformed_dataset
+
+
+def create_imagenetv2_dataset(
+    preprocess_val, batch_size=64, num_worker=4
+):
+    dataset = ImageNetV2Dataset(location=".", transform=preprocess_val)
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_worker
+    )

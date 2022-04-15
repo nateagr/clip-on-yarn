@@ -4,13 +4,13 @@ import logging
 
 import wandb
 import torch
-import torch.nn as nn
 from torch.cuda.amp import autocast
 import torch.distributed as dist
 import torch.distributed.nn
 from tf_yarn.pytorch import model_ckpt
 
 from clip_on_yarn.loss import ClipLoss
+from clip_on_yarn.validation.evaluate import zero_shot_eval
 
 
 logger = logging.getLogger()
@@ -26,9 +26,18 @@ def model_inference(model, images, texts):
 
 def train(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, model_dir, tb_writer, enable_wandb, profiler, local_loss=True
+    precision, model_dir, tb_writer, enable_wandb, profiler, local_loss=True,
+    validation_loader=None, validation_period=0
 ):
-    model.train()
+    def _get_progress():
+        return f"Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
+
+    def _log_metrics(metrics, taining: bool):
+        for name, val in metrics.items():
+            name = f"{'train/' if taining else 'eval/'}" + name
+            tb_writer.add_scalar(name, val, current_step)
+            if enable_wandb:
+                wandb.log({name: val, 'step': current_step})
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -85,11 +94,24 @@ def train(
         batch_time_acc += batch_time
         end = time.perf_counter()
 
+        if validation_period and validation_loader \
+            and (current_step % validation_period) == 0 and rank == 0:
+            model.eval()
+            metrics = zero_shot_eval(
+                model, validation_loader, device, batch_size, precision
+            )
+            model.train()
+            logger.info(
+                f"[{os.getpid()}] {_get_progress()}"
+                f"zero shot evaluation: {metrics}"
+            )
+            _log_metrics(metrics, False)
+
         if (i % logging_n_steps) == 0:
             num_samples = i * batch_size * world_size
             percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
-                f"[{os.getpid()}] Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
+                f"[{os.getpid()}] {_get_progress()}"
                 f"Loss: {total_loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}"
                 f"\tLR: {optimizer.param_groups[0]['lr']:5f}\tlogit_scale {model.module.logit_scale.data:.3f}"
             )
@@ -103,12 +125,7 @@ def train(
                     "lr": optimizer.param_groups[0]["lr"],
                     "samples_per_second": world_size * batch_size * logging_n_steps / batch_time_acc
                 }
-
-                for name, val in log_data.items():
-                    name = "train/" + name
-                    tb_writer.add_scalar(name, val, current_step)
-                    if enable_wandb:
-                        wandb.log({name: val, 'step': current_step})
+                _log_metrics(log_data, True)
 
             batch_time_acc = 0
 

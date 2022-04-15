@@ -1,10 +1,10 @@
 import logging
 from contextlib import suppress
 
+from tqdm import tqdm
 import torch
 import torch
 import torch.nn.functional as F
-import tqdm
 from clip import tokenize
 from tf_yarn.pytorch.model_ckpt import _unwrap_model
 
@@ -19,7 +19,7 @@ logger = logging.getLogger()
 def zero_shot_classifier(model, classes, templates, device):
     with torch.no_grad():
         zeroshot_classifier = []
-        for classname in tqdm(classes):
+        for classname in classes:
             texts = [template(classname) for template in templates] 
             texts = tokenize(texts).to(device) 
             class_embeddings = _unwrap_model(model).encode_text(texts)

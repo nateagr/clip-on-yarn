@@ -30,12 +30,15 @@ def train(
     validation_loader=None, validation_period=0
 ):
     def _get_progress():
+        num_samples = i * batch_size * world_size
+        percent_complete = 100.0 * i / n_batches_per_epoch
         return f"Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
 
     def _log_metrics(metrics, taining: bool):
         for name, val in metrics.items():
             name = f"{'train/' if taining else 'eval/'}" + name
-            tb_writer.add_scalar(name, val, current_step)
+            if tb_writer:
+                tb_writer.add_scalar(name, val, current_step)
             if enable_wandb:
                 wandb.log({name: val, 'step': current_step})
 
@@ -108,8 +111,6 @@ def train(
             _log_metrics(metrics, False)
 
         if (i % logging_n_steps) == 0:
-            num_samples = i * batch_size * world_size
-            percent_complete = 100.0 * i / n_batches_per_epoch
             logger.info(
                 f"[{os.getpid()}] {_get_progress()}"
                 f"Loss: {total_loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}"

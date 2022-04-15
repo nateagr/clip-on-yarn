@@ -16,7 +16,7 @@ import torch.distributed as dist
 from webdataset.extradatasets import FakeLength
 
 
-from clip_on_yarn.dataset import create_webdataset
+from clip_on_yarn.dataset.dataset import create_webdataset
 from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train
 from clip_on_yarn.model import load_pretrained_model, transform
@@ -95,7 +95,6 @@ def training_loop(
     eps = config["eps"]
     weight_decay = config["weight_decay"]
     warmup = config["warmup"]
-    aggregate = config["aggregate"]
     wandb_config = config["wandb_config"]
     model_dir = config["model_dir"]
     profiling_hdfs_dir = config["profiling_hdfs_dir"]

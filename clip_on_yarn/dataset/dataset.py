@@ -52,8 +52,7 @@ def create_webdataset(
     cache_path=None
 ):
     dataset = wds \
-        .WebDataset(urls, cache_dir=cache_path, cache_size=10 ** 10, handler=wds.handlers.warn_and_continue) \
-        .shuffle(1000)
+        .WebDataset(urls, cache_dir=cache_path, cache_size=10 ** 10, handler=wds.handlers.warn_and_continue)
 
     filter_fn = partial(
         filter_row, caption_key=caption_key, image_key=image_key, metadata_key=metadata_key,

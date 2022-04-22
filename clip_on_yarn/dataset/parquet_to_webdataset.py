@@ -3,9 +3,21 @@ from typing import List
 import json
 import os
 
+import numpy as np
 import pyarrow.parquet as pq
 import webdataset as wds
 import fsspec
+
+
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
 
 
 def create_webdataset_from_parquet(
@@ -50,17 +62,15 @@ def _from_parquet_to_webdataset(indexed_parquet_file, webdataset_hdfs_dir):
                 title = "" if row["title"] is None else row["title"]
                 description = "" if row["description"] is None else row["description"]
                 text = ''.join((title, "\n", description))
-                meta = {
-                    col: row[col] for col in pdf.columns if col != "image"
-                }
+                meta = {col: row[col] for col in pdf.columns if col != "image"}
                 sample = {
                     "__key__": "%010d" % (index_file*100000+index),
-                    "jpg": row["image"],
                     "txt": text,
-                    "json": json.dumps(meta, indent=4)
+                    "json": json.dumps(meta, indent=4, cls=NpEncoder)
                 }
+                if row["image"]:
+                    sample["jpg"] = row["image"]
                 wdsw.write(sample)
             wdsw.close()
         except Exception as e: 
-            print(e)
-        return 0
+            raise e

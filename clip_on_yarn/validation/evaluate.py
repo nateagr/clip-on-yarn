@@ -1,7 +1,7 @@
 import logging
 from contextlib import suppress
+from typing import Callable, List, NamedTuple
 
-from tqdm import tqdm
 import torch
 import torch
 import torch.nn.functional as F
@@ -36,11 +36,11 @@ def accuracy(logits, target, topk=(1,)):
     return [float(correct[:k].reshape(-1).float().sum(0, keepdim=True).cpu().numpy()) for k in topk]
 
 
-def evaluate(model, classifier, dataloader, device, batch_size, precision):
+def evaluate(model, classifier, dataloader, device, precision):
     autocast = torch.cuda.amp.autocast if precision == 'amp' else suppress
     with torch.no_grad():
         top1, top5, n = 0., 0., 0.
-        for images, target in tqdm(dataloader, unit_scale=batch_size):
+        for images, target in dataloader:
             images = images.to(device)
             target = target.to(device)
 
@@ -61,12 +61,12 @@ def evaluate(model, classifier, dataloader, device, batch_size, precision):
 
 
 def zero_shot_eval(
-    model, dataloader, device, batch_size, precision,
+    model, dataloader, device, precision,
     classes=imagenet_classnames, templates=openai_imagenet_template
 ):
     logger.info('Starting zero-shot evaluation')
     classifier = zero_shot_classifier(model, classes, templates, device)
-    top1, top5 = evaluate(model, classifier, dataloader, device, batch_size, precision)
+    top1, top5 = evaluate(model, classifier, dataloader, device, precision)
     logger.info('Finished zero-shot evaluation')
     return {
         'zeroshot-val-top1': top1,

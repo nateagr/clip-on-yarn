@@ -24,10 +24,10 @@ def model_inference(model, images, texts):
     return image_features, text_features, model.logit_scale.exp()
 
 
-def train(
+def train_and_evaluate(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, model_dir, tb_writer, enable_wandb, profiler, local_loss=True,
-    validation_loader=None, validation_period=0
+    precision, model_dir, tb_writer, enable_wandb, profiler, validation_config, 
+    local_loss=True
 ):
     def _get_progress():
         num_samples = i * batch_size * world_size
@@ -97,16 +97,16 @@ def train(
         batch_time_acc += batch_time
         end = time.perf_counter()
 
-        if validation_period and validation_loader \
-            and (current_step % validation_period) == 0 and rank == 0:
+        if rank == 0 and validation_config and (validation_config.period_in_steps % i) == 0:
             model.eval()
             metrics = zero_shot_eval(
-                model, validation_loader, device, batch_size, precision
+                model, validation_config.dataloader, device, precision, validation_config.classnames,
+                validation_config.templates
             )
             model.train()
             logger.info(
                 f"[{os.getpid()}] {_get_progress()}"
-                f"zero shot evaluation: {metrics}"
+                f"zero shot evaluation metrics: {metrics}"
             )
             _log_metrics(metrics, False)
 

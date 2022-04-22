@@ -21,13 +21,13 @@ class NpEncoder(json.JSONEncoder):
 
 
 def create_webdataset_from_parquet(
-    spark_session, parquet_files: List[str], webdataset_hdfs_dir: str
+    spark_session, parquet_files: List[str], webdataset_hdfs_dir: str, filter_fn = None
 ) -> None:
     indexed_parquet_file = list(enumerate(sorted(parquet_files)))
     rdd = spark_session.sparkContext.parallelize(indexed_parquet_file, len(parquet_files))
     rdd.foreach(
         lambda indexed_parquet_file: _from_parquet_to_webdataset(
-            indexed_parquet_file, webdataset_hdfs_dir
+            indexed_parquet_file, webdataset_hdfs_dir, filter_fn
         )
     )
 
@@ -48,7 +48,7 @@ class WebDatasetSampleWriter:
         fs.put(self.local_path, self.hdfs_path)
 
 
-def _from_parquet_to_webdataset(indexed_parquet_file, webdataset_hdfs_dir):
+def _from_parquet_to_webdataset(indexed_parquet_file, webdataset_hdfs_dir, filter_fn):
     index_file, parquet_file = indexed_parquet_file
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -58,6 +58,8 @@ def _from_parquet_to_webdataset(indexed_parquet_file, webdataset_hdfs_dir):
             )
             pdf = pq.read_table(parquet_file).to_pandas()
             for index, row in pdf.iterrows():
+                if not filter_fn(row):
+                    continue
                 print(f"Processing row {index}")
                 title = "" if row["title"] is None else row["title"]
                 description = "" if row["description"] is None else row["description"]

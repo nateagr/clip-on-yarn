@@ -53,7 +53,6 @@ def evaluate(model, classifier, dataloader, device, precision):
             top1 += acc1
             top5 += acc5
             n += images.size(0)
-            break
 
     top1 = (top1 / n)
     top5 = (top5 / n)

@@ -10,7 +10,7 @@ import torch.distributed.nn
 from tf_yarn.pytorch import model_ckpt
 
 from clip_on_yarn.loss import ClipLoss
-from clip_on_yarn.validation.evaluate import zero_shot_eval
+from clip_on_yarn.validation.evaluate import evaluate
 
 
 logger = logging.getLogger()
@@ -26,7 +26,7 @@ def model_inference(model, images, texts):
 
 def train_and_evaluate(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, model_dir, tb_writer, enable_wandb, profiler, validation_config, 
+    precision, model_dir, tb_writer, enable_wandb, profiler, validation_config, validation_classifier,
     local_loss=True
 ):
     def _get_progress():
@@ -99,10 +99,12 @@ def train_and_evaluate(
 
         if rank == 0 and validation_config and (validation_config.period_in_steps % i) == 0:
             model.eval()
-            metrics = zero_shot_eval(
-                model, validation_config.dataloader, device, precision, validation_config.classnames,
-                validation_config.templates
+            logger.info("Beginning zero_shot_eval")
+            metrics= evaluate(
+                model, validation_classifier, validation_config.dataloader,
+                device, precision, validation_config.n_batches
             )
+            logger.info("Finished zero_shot_eval")
             model.train()
             logger.info(
                 f"[{os.getpid()}] {_get_progress()}"

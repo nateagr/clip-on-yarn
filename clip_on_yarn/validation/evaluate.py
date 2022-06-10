@@ -1,8 +1,7 @@
 import logging
 from contextlib import suppress
-from typing import Callable, List, NamedTuple
 
-import torch
+from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from clip import tokenize
@@ -19,7 +18,7 @@ logger = logging.getLogger()
 def zero_shot_classifier(model, classes, templates, device):
     with torch.no_grad():
         zeroshot_classifier = []
-        for classname in classes:
+        for classname in tqdm(classes, total=len(classes)):
             texts = [template(classname) for template in templates] 
             texts = tokenize(texts).to(device) 
             class_embeddings = _unwrap_model(model).encode_text(texts)
@@ -31,16 +30,19 @@ def zero_shot_classifier(model, classes, templates, device):
 
 
 def accuracy(logits, target, topk=(1,)):
+    # Indices of K largest logits (shape: (K, batch size))
     top_classes = logits.topk(max(topk), 1, True, True)[1].t()
+    # True if the indice matches the target else False (shape: (K, batch size))
     correct = top_classes.eq(target.view(1, -1).expand_as(top_classes))
+    # Flatten, convert to 1.0 or 0.0 and sum values
     return [float(correct[:k].reshape(-1).float().sum(0, keepdim=True).cpu().numpy()) for k in topk]
 
 
-def evaluate(model, classifier, dataloader, device, precision):
+def evaluate(model, classifier, dataloader, device, precision, n_steps=None):
     autocast = torch.cuda.amp.autocast if precision == 'amp' else suppress
     with torch.no_grad():
-        top1, top5, n = 0., 0., 0.
-        for images, target in dataloader:
+        top1, top5, top10, n = 0., 0., 0., 0.
+        for i, (images, target) in tqdm(enumerate(dataloader)):
             images = images.to(device)
             target = target.to(device)
 
@@ -49,25 +51,28 @@ def evaluate(model, classifier, dataloader, device, precision):
                 image_features = F.normalize(image_features, dim=-1)
                 logits = 100. * image_features @ classifier
 
-            acc1, acc5 = accuracy(logits, target, topk=(1, 5))
+            acc1, acc5, acc10 = accuracy(logits, target, topk=(1, 5, 10))
             top1 += acc1
             top5 += acc5
+            top10 += acc10
             n += images.size(0)
+            if n_steps and i >= n_steps:
+                break
 
     top1 = (top1 / n)
     top5 = (top5 / n)
-    return top1, top5
+    top10 = (top10 / n)
+    return {
+        'zeroshot-val-top1': top1,
+        'zeroshot-val-top5': top5,
+        'zeroshot-val-top10': top10
+    }
 
 
 def zero_shot_eval(
     model, dataloader, device, precision,
-    classes=imagenet_classnames, templates=openai_imagenet_template
+    classes=imagenet_classnames, templates=openai_imagenet_template, n_steps=None
 ):
-    logger.info('Starting zero-shot evaluation')
+    logger.info('Building zero shot classifier')
     classifier = zero_shot_classifier(model, classes, templates, device)
-    top1, top5 = evaluate(model, classifier, dataloader, device, precision)
-    logger.info('Finished zero-shot evaluation')
-    return {
-        'zeroshot-val-top1': top1,
-        'zeroshot-val-top5': top5
-    }
+    return evaluate(model, classifier, dataloader, device, precision, n_steps)

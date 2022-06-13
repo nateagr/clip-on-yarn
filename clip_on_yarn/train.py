@@ -26,7 +26,8 @@ def model_inference(model, images, texts):
 
 def train_and_evaluate(
     model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, model_dir, tb_writer, enable_wandb, profiler, validation_config, validation_classifier,
+    precision, model_dir, tb_writer, enable_wandb, profiler,
+    validation_config, validation_classifier, validation_dataloader,
     local_loss=True
 ):
     def _get_progress():
@@ -97,11 +98,11 @@ def train_and_evaluate(
         batch_time_acc += batch_time
         end = time.perf_counter()
 
-        if rank == 0 and validation_config and (validation_config.period_in_steps % i) == 0:
+        if rank == 0 and validation_config and (i % validation_config.period_in_steps) == 0:
             model.eval()
-            logger.info("Beginning zero_shot_eval")
+            logger.info("Starting zero shot evaluation")
             metrics= evaluate(
-                model, validation_classifier, validation_config.dataloader,
+                model, validation_classifier, validation_dataloader,
                 device, precision, validation_config.n_batches
             )
             logger.info("Finished zero_shot_eval")
@@ -111,6 +112,7 @@ def train_and_evaluate(
                 f"zero shot evaluation metrics: {metrics}"
             )
             _log_metrics(metrics, False)
+
 
         if (i % logging_n_steps) == 0:
             logger.info(

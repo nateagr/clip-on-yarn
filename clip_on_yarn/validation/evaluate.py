@@ -1,6 +1,9 @@
 import logging
 from contextlib import suppress
+import json
+from typing import NamedTuple, List, Callable
 
+import fsspec
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -10,9 +13,37 @@ from tf_yarn.pytorch.model_ckpt import _unwrap_model
 from clip_on_yarn.validation.imagenet_zeroshot_data import (
     imagenet_classnames, openai_imagenet_template
 )
+from clip_on_yarn.dataset.dataset import create_webdataset
+from clip_on_yarn.model import transform
 
 
 logger = logging.getLogger()
+
+
+class ValidationConfig(NamedTuple):
+    validation_webdataset_dir: str # Path to validation webdataset
+    batch_size: int
+    num_workers: int
+    classnames: List[str] # List of classes
+    templates: List[Callable[[str], str]] # List of functions classname -> text
+    period_in_steps: int # validation period in steps
+    n_batches: int # number of batches to process during validation
+
+
+def extract_image_label(row):
+    metadata = json.loads(row["metadata"])
+    return row["image_tensor"], metadata["training_category_id"]
+
+
+def create_validation_dataloader(validation_webdataset_dir: str, batch_size: int, num_workers: int):
+    # dataset
+    fs, path = fsspec.core.url_to_fs(validation_webdataset_dir)
+    url_paths = ["pipe:hdfs dfs -cat viewfs://root"+ path for path in fs.ls(path, detail=False)]
+    validation_dataset = create_webdataset(url_paths, transform(224, False), enable_metadata=True) \
+        .map(extract_image_label)
+    return torch.utils.data.DataLoader(
+        validation_dataset, batch_size=batch_size, num_workers=num_workers
+    )
 
 
 def zero_shot_classifier(model, classes, templates, device):

@@ -3,7 +3,6 @@ import logging
 import uuid
 import fsspec
 from functools import partial
-from typing import List, NamedTuple, Callable
 
 import wandb
 import torch
@@ -22,15 +21,7 @@ from clip_on_yarn.optimizer import get_adamw_optimize, cosine_lr
 from clip_on_yarn.train import train_and_evaluate
 from clip_on_yarn.model import load_pretrained_model, transform
 from clip_on_yarn.hdfs import upload_dir
-from clip_on_yarn.validation.evaluate import zero_shot_classifier
-
-
-class ValidationConfig(NamedTuple):
-    dataloader: torch.utils.data.dataloader.DataLoader
-    classnames: List[str]
-    templates: List[Callable[[str], str]]
-    period_in_steps: int # validation period in steps
-    n_batches: int # number of batches to process during validation
+from clip_on_yarn.validation.evaluate import zero_shot_classifier, create_validation_dataloader
 
 
 logger = logging.getLogger()
@@ -51,7 +42,7 @@ default_config = {
     },
     "model_dir": None, # Directory where model is checkpointed
     "profiling_hdfs_dir": None, # Directory where profiling results will be written
-    "validation_config_fn": None # function that generate and return an instance of ValidationConfig
+    "validation_config": None # instance of ValidationConfig
 }
 
 
@@ -109,6 +100,7 @@ def training_loop(
     wandb_config = config["wandb_config"]
     model_dir = config["model_dir"]
     profiling_hdfs_dir = config["profiling_hdfs_dir"]
+    validation_config = config["validation_config"]
 
     if rank == 0 and wandb_config and wandb_config["api_key"] and wandb_config["entity"] \
         and wandb_config["project"]:
@@ -120,6 +112,18 @@ def training_loop(
         wandb.init(config=config, dir=".")
     else:
         enable_wandb = False
+
+    validation_dataloader = None
+    validation_classifier = None
+    if validation_config and rank == 0:
+        validation_classifier = zero_shot_classifier(
+            model, validation_config.classnames, validation_config.templates, device
+        )
+        validation_classifier = validation_classifier.type(torch.float32)
+        validation_dataloader = create_validation_dataloader(
+            validation_config.validation_webdataset_dir, validation_config.batch_size,
+            validation_config.num_workers
+        )
 
     validation_config = config["validation_config_fn"]() \
         if rank == 0 and config["validation_config_fn"] else None
@@ -156,7 +160,8 @@ def training_loop(
     for epoch in range(start_epoch, n_epochs):
         train_and_evaluate(
             model, trainloader, epoch, optimizer, scaler, scheduler, device,
-            precision, model_dir, tb_writer, enable_wandb, profiler, validation_config, validation_classifier
+            precision, model_dir, tb_writer, enable_wandb, profiler,
+            validation_config, validation_classifier, validation_dataloader
         )
     if enable_wandb:
         wandb.finish()

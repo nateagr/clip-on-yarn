@@ -124,12 +124,6 @@ def training_loop(
             validation_config.validation_webdataset_dir, validation_config.batch_size,
             validation_config.num_workers
         )
-
-    validation_config = config["validation_config_fn"]() \
-        if rank == 0 and config["validation_config_fn"] else None
-    validation_classifier = zero_shot_classifier(
-        model, validation_config.classnames, validation_config.templates, device
-    ) if validation_config else None
     
     train_steps_per_epoch = len(trainloader)
     total_steps = train_steps_per_epoch * n_epochs
@@ -149,6 +143,8 @@ def training_loop(
         ckpt = model_ckpt.load_latest_ckpt(model_dir, model, optimizer, device)
         if ckpt:
             start_epoch = ckpt["epoch"]
+            logger.info(f"Successfully loaded latest checkpoint from {model_dir}")
+            logger.info(f"Resuming training at epoch {start_epoch}")
             if scaler is not None and 'scaler' in ckpt:
                 scaler.load_state_dict(ckpt['scaler'])
 

@@ -1,0 +1,8 @@
+# Virtual env
+.venv
+
+# Egg
+*.egg-info
+
+#Cython
+*.pyc

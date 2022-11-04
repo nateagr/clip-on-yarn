@@ -1,22 +1,25 @@
+import logging
 import os
 import time
-import logging
+from typing import Callable, Tuple
 
-import wandb
 import torch
-from torch.cuda.amp import autocast
 import torch.distributed as dist
 import torch.distributed.nn
+import wandb
 from tf_yarn.pytorch import model_ckpt
+from torch.cuda.amp import autocast
 
 from clip_on_yarn.loss import ClipLoss
-from clip_on_yarn.validation.evaluate import evaluate
-
+from clip_on_yarn.validation.evaluate import ValidationConfig, evaluate
 
 logger = logging.getLogger()
 
 
-def model_inference(model, images, texts):
+def model_inference(
+    model: torch.nn.Module, images: torch.Tensor, texts: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    """Inference"""
     image_features = model.encode_image(images)
     text_features = model.encode_text(texts)
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -25,33 +28,43 @@ def model_inference(model, images, texts):
 
 
 def train_and_evaluate(
-    model, trainloader, epoch, optimizer, scaler, scheduler, device,
-    precision, model_dir, tb_writer, enable_wandb, profiler,
-    validation_config, validation_classifier, validation_dataloader,
-    local_loss=True
-):
-    def _get_progress():
+    model: torch.nn.Module,
+    trainloader: torch.utils.data.dataloader.DataLoader,
+    epoch: int,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.cuda.amp.GradScaler,
+    scheduler: Callable,
+    device: str,
+    precision: str,
+    model_dir: str,
+    tb_writer,
+    enable_wandb: bool,
+    profiler: torch.profiler.profile,
+    validation_config: ValidationConfig,
+    validation_classifier: torch.tensor,
+    validation_dataloader: torch.utils.data.dataloader.DataLoader,
+    local_loss: bool = True,
+) -> None:
+    """Train and evaluate for one epoch"""
+
+    def _get_progress() -> str:
         num_samples = i * batch_size * world_size
         percent_complete = 100.0 * i / n_batches_per_epoch
         return f"Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
 
-    def _log_metrics(metrics, taining: bool):
+    def _log_metrics(metrics:dict, taining: bool) -> None:
         for name, val in metrics.items():
             name = f"{'train/' if taining else 'eval/'}" + name
             if tb_writer:
                 tb_writer.add_scalar(name, val, current_step)
             if enable_wandb:
-                wandb.log({name: val, 'step': current_step})
+                wandb.log({name: val, "step": current_step})
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    loss = ClipLoss(
-        local_loss=local_loss,
-        rank=rank,
-        world_size=world_size
-    )
-    
+    loss = ClipLoss(local_loss=local_loss, rank=rank, world_size=world_size)
+
     n_batches_per_epoch = len(trainloader)
     n_samples_per_epoch = len(trainloader.dataset)
     n_done_steps = n_batches_per_epoch * epoch
@@ -62,14 +75,15 @@ def train_and_evaluate(
     logging_n_steps = 100
     batch_time_acc = 0
     end = time.perf_counter()
+    model.train()  # Make sure the model is in train mode
     for i, batch in enumerate(trainloader):
-        current_step = n_done_steps +  i
+        current_step = n_done_steps + i
         scheduler(current_step)
 
         optimizer.zero_grad()
 
-        images = batch['image_tensor']
-        texts = batch['text_tokens']
+        images = batch["image_tensor"]
+        texts = batch["text_tokens"]
         images = images.to(device, non_blocking=True)
         texts = texts.to(device, non_blocking=True)
 
@@ -99,20 +113,14 @@ def train_and_evaluate(
         end = time.perf_counter()
 
         if rank == 0 and validation_config and (i % validation_config.period_in_steps) == 0:
-            model.eval()
             logger.info("Starting zero shot evaluation")
-            metrics= evaluate(
-                model, validation_classifier, validation_dataloader,
-                device, precision, validation_config.n_batches
+            metrics = evaluate(
+                model, validation_classifier, validation_dataloader, device, precision, validation_config.n_batches
             )
-            logger.info("Finished zero_shot_eval")
             model.train()
-            logger.info(
-                f"[{os.getpid()}] {_get_progress()}"
-                f"zero shot evaluation metrics: {metrics}"
-            )
+            logger.info("Finished zero_shot_eval")
+            logger.info(f"[{os.getpid()}] {_get_progress()}" f"zero shot evaluation metrics: {metrics}")
             _log_metrics(metrics, False)
-
 
         if (i % logging_n_steps) == 0:
             logger.info(
@@ -126,9 +134,9 @@ def train_and_evaluate(
                     "loss": total_loss.item(),
                     "data_time": data_time,
                     "batch_time": batch_time,
-                    "scale":  model.module.logit_scale.data.item(),
+                    "scale": model.module.logit_scale.data.item(),
                     "lr": optimizer.param_groups[0]["lr"],
-                    "samples_per_second": world_size * batch_size * logging_n_steps / batch_time_acc
+                    "samples_per_second": world_size * batch_size * logging_n_steps / batch_time_acc,
                 }
                 _log_metrics(log_data, True)
 
@@ -136,7 +144,7 @@ def train_and_evaluate(
 
         if profiler:
             profiler.step()
-    
+
     if profiler:
         profiler.stop()
 
@@ -144,6 +152,4 @@ def train_and_evaluate(
         others = dict()
         if scaler:
             others["scaler"] = scaler.state_dict()
-        model_ckpt.save_ckpt(
-            model_dir, model, optimizer, epoch, **others
-        )
+        model_ckpt.save_ckpt(model_dir, model, optimizer, epoch, **others)

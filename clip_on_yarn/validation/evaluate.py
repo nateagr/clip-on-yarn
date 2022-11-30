@@ -1,61 +1,108 @@
-import json
+"""Evaluation scripts"""
 import logging
+import pickle
 from contextlib import suppress
-from typing import Callable, List, NamedTuple
+from functools import partial
+from typing import Any, Dict, List
 
 import fsspec
 import torch
 import torch.nn.functional as F
-from clip import tokenize
+from clip_on_yarn.config import CONFIG
 from clip_on_yarn.dataset.dataset import create_webdataset
-from clip_on_yarn.model import transform
+from clip_on_yarn.model.mclip import mCLIP
+from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
 from tf_yarn.pytorch.model_ckpt import _unwrap_model
+from torch.utils.data import DataLoader
+from torchvision.transforms import Compose
 from tqdm import tqdm
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 logger = logging.getLogger()
 
 
-class ValidationConfig(NamedTuple):
-    validation_webdataset_dir: str  # Path to validation webdataset
-    batch_size: int
-    num_workers: int
-    classnames: List[str]  # List of classes
-    templates: List[Callable[[str], str]]  # List of functions classname -> text
-    period_in_steps: int  # validation period in steps
-    n_batches: int  # number of batches to process during validation
+def extract_image_label(row, uc_id_to_idx_mapping):
+    """Extract image and target from the wds sample"""
+    label = uc_id_to_idx_mapping[row["metadata"]["uc_id"]]
+    return row["image_tensor"], label
 
 
-def extract_image_label(row):
-    metadata = json.loads(row["metadata"])
-    return row["image_tensor"], metadata["training_category_id"]
+def filter_unsupported_uc_id(row, uc_ids):
+    return row["metadata"]["uc_id"] in uc_ids
+
+
+def create_validation_dataloader_per_lang(
+    webdataset_dir_per_lang: Dict[str, str],
+    batch_size: int,
+    num_workers: int,
+    uc_id_to_idx_mapping: Dict[int, int],
+    image_transform_val: Compose,
+    tokenizer: PreTrainedTokenizer,
+) -> Dict[str, DataLoader]:
+    """Create a validation dataloader per lang"""
+    dataloader_per_lang = {}
+    for lang in CAT_LANGUAGES_OF_INTEREST:
+        dataloader_per_lang[lang] = create_validation_dataloader(
+            webdataset_dir_per_lang[lang], batch_size, num_workers, uc_id_to_idx_mapping, image_transform_val, tokenizer
+        )
+    return dataloader_per_lang
 
 
 def create_validation_dataloader(
-    validation_webdataset_dir: str, batch_size: int, num_workers: int
-) -> torch.utils.data.dataloader.DataLoader:
+    validation_webdataset_dir: str,
+    batch_size: int,
+    num_workers: int,
+    uc_id_to_idx_mapping: Dict[int, int],
+    image_transform_val: Compose,
+    tokenizer: PreTrainedTokenizer,
+) -> DataLoader:
     """Create validation dataloader"""
     fs, path = fsspec.core.url_to_fs(validation_webdataset_dir)
-    url_paths = ["pipe:hdfs dfs -cat viewfs://root" + path for path in fs.ls(path, detail=False)]
-    validation_dataset = create_webdataset(url_paths, transform(224, False), enable_metadata=True).map(
-        extract_image_label
+    url_paths = [
+        "pipe:hdfs dfs -cat viewfs://root" + path for path in fs.ls(path, detail=False) if path.endswith(".tar")
+    ]
+    extract_fb = partial(extract_image_label, uc_id_to_idx_mapping=uc_id_to_idx_mapping)
+    validation_dataset = create_webdataset(url_paths, image_transform_val, tokenizer, enable_metadata=True).map(
+        extract_fb
     )
-    return torch.utils.data.DataLoader(validation_dataset, batch_size=batch_size, num_workers=num_workers)
+    return DataLoader(validation_dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
 
 
-def zero_shot_classifier(model: torch.nn.Module, classes: List[str], templates: List[str], device: str) -> torch.Tensor:
+def zero_shot_classifier(
+    model: mCLIP,
+    tokenizer: PreTrainedTokenizer,
+    templates_per_uc_id: Dict[int, List[str]],
+    device: str,
+) -> torch.Tensor:
     """Create class embeddings"""
-    model.eval()  # Make sure the model is in eval mode
+    unwrapped_model = _unwrap_model(model)
+    unwrapped_model.eval()  # Make sure the model is in eval mode
     with torch.no_grad():
         zeroshot_classifier = []
-        for classname in tqdm(classes, total=len(classes)):
-            texts = [template(classname) for template in templates]
-            texts = tokenize(texts).to(device)
-            class_embeddings = _unwrap_model(model).encode_text(texts)
+        for templates in tqdm(templates_per_uc_id.values()):
+            tokenized_text = tokenizer(
+                templates.tolist(), padding="max_length", truncation=True, max_length=77, return_tensors="pt"
+            )
+            input_ids = tokenized_text["input_ids"].to(device)
+            attention_mask = tokenized_text["attention_mask"].to(device)
+            class_embeddings = unwrapped_model.text_transformer(input_ids, attention_mask)
             class_embedding = F.normalize(class_embeddings, dim=-1).mean(dim=0)
             class_embedding /= class_embedding.norm()
             zeroshot_classifier.append(class_embedding)
     # stack along second dimension to avoid transpose when matrix multiplication
-    return torch.stack(zeroshot_classifier, dim=1).to(device)
+    return torch.stack(zeroshot_classifier, dim=1).to(device).type(torch.float32)
+
+
+def zero_shot_classifier_per_lang(model: mCLIP, tokenizer: PreTrainedTokenizer, device: str) -> Dict[str, torch.Tensor]:
+    """Create class embeddings per lang"""
+    classifier_per_lang = {}
+    templates_per_uc_id_x_lang = pickle.load(
+        fsspec.filesystem("hdfs").open(CONFIG.templates_per_lang_x_uc_id_path, "rb")
+    )
+    for lang in CAT_LANGUAGES_OF_INTEREST:
+        logger.info(f"Creating {lang} classifier")
+        classifier_per_lang[lang] = zero_shot_classifier(model, tokenizer, templates_per_uc_id_x_lang[lang], device)
+    return classifier_per_lang
 
 
 def accuracy(logits: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> List[float]:
@@ -69,24 +116,25 @@ def accuracy(logits: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> 
 
 
 def evaluate(
-    model: torch.nn.Module,
+    model: mCLIP,
     classifier: torch.Tensor,
-    dataloader: torch.utils.data.dataloader.DataLoader,
+    dataloader: DataLoader,
     device: str,
     precision: str,
     n_steps: int = None,
 ) -> dict:
     """Evaluate the accuracies of the model"""
-    model.eval()  # Make sure the model is in eval mode
+    unwrapped_model = _unwrap_model(model)
+    unwrapped_model.eval()  # Make sure the model is in eval mode
     autocast = torch.cuda.amp.autocast if precision == "amp" else suppress
     with torch.no_grad():
         top1, top5, top10, n = 0.0, 0.0, 0.0, 0.0
-        for i, (images, target) in tqdm(enumerate(dataloader)):
+        for i, (images, target) in enumerate(dataloader):
             images = images.to(device)
             target = target.to(device)
 
             with autocast():
-                image_features = _unwrap_model(model).encode_image(images)
+                image_features = unwrapped_model.visual_transformer(images)
                 image_features = F.normalize(image_features, dim=-1)
                 logits = 100.0 * image_features @ classifier
 
@@ -102,3 +150,27 @@ def evaluate(
     top5 = top5 / n
     top10 = top10 / n
     return {"zeroshot-val-top1": top1, "zeroshot-val-top5": top5, "zeroshot-val-top10": top10}
+
+
+def compute_metrics(
+    model: mCLIP,
+    classifier_per_lang: Dict[str, torch.Tensor],
+    dataloader_per_lang: Dict[str, DataLoader],
+    device: str,
+    precision: str,
+    steps_per_lang: Dict[str, int],
+) -> Dict[str, Any]:
+    """Compute validation metrics"""
+    metrics = {}
+    for lang in CAT_LANGUAGES_OF_INTEREST:
+        logger.info(f"Computing {lang} evaluation metrics")
+        lang_metrics = evaluate(
+            model,
+            classifier=classifier_per_lang[lang],
+            dataloader=dataloader_per_lang[lang],
+            device=device,
+            precision=precision,
+            n_steps=steps_per_lang[lang],
+        )
+        metrics.update({f"{lang}_{k}": v for k, v in lang_metrics.items()})
+    return metrics

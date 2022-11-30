@@ -1,6 +1,7 @@
 """Main script"""
 import logging
 import os
+import pickle
 import uuid
 from functools import partial
 from typing import List
@@ -8,52 +9,54 @@ from typing import List
 import fsspec
 import torch
 import torch.distributed as dist
-import wandb
-from tf_yarn.pytorch import (DataLoaderArgs, NodeLabel, PytorchExperiment,
-                             TaskSpec, model_ckpt, run_on_yarn)
+from tf_yarn.pytorch import DataLoaderArgs, PytorchExperiment, model_ckpt, run_on_yarn
 from torch.cuda.amp import GradScaler
+from torchvision.transforms import Compose
+from transformers.tokenization_utils import PreTrainedTokenizer
 from webdataset.extradatasets import FakeLength
 
-from clip_on_yarn.config import Config
+import wandb
+from clip_on_yarn.config import CONFIG
 from clip_on_yarn.dataset.dataset import create_webdataset
-from clip_on_yarn.model import load_pretrained_model, transform
+from clip_on_yarn.model.mclip import load_model_tokenizer_and_transforms, mCLIP
 from clip_on_yarn.optimizer import cosine_lr, get_adamw_optimize
 from clip_on_yarn.train import train_and_evaluate
 from clip_on_yarn.utils.hdfs import upload_dir
 from clip_on_yarn.utils.profiler import create_profiler
 from clip_on_yarn.utils.seed import seed_everything
-from clip_on_yarn.validation.evaluate import (create_validation_dataloader,
-                                              zero_shot_classifier)
+from clip_on_yarn.validation.evaluate import create_validation_dataloader_per_lang, zero_shot_classifier_per_lang
+from clip_on_yarn.validation.templates import create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping
 
 logger = logging.getLogger()
-CONFIG = Config()
 
 
 def training_loop(
-    model: torch.nn.Module,
+    model: mCLIP,
     trainloader: torch.utils.data.dataloader.DataLoader,
     device: str,
     rank: int,
     tb_writer,
+    image_transform_val: Compose,
+    tokenizer: PreTrainedTokenizer,
     **kwds,
 ):
     """Training loop"""
     seed_everything(rank)
-    config = CONFIG.update(kwds)
-    logger.info(f"config: {config}")
-
-    n_epochs = config.n_epochs
-    precision = config.precision
-    learning_rate = config.learning_rate
-    beta1 = config.beta1
-    beta2 = config.beta2
-    eps = config.eps
-    weight_decay = config.weight_decay
-    warmup = config.warmup
-    wandb_config = config.wandb_config
-    model_dir = config.model_dir
-    profiling_hdfs_dir = config.profiling_hdfs_dir
-    validation_config = config.validation_config
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Remove tokenizer error
+    CONFIG.update(kwds)
+    logger.info(f"config: {CONFIG}")
+    n_epochs = CONFIG.train_cfg.n_epochs
+    precision = CONFIG.train_cfg.precision
+    learning_rate = CONFIG.train_cfg.learning_rate
+    beta1 = CONFIG.train_cfg.beta1
+    beta2 = CONFIG.train_cfg.beta2
+    eps = CONFIG.train_cfg.eps
+    weight_decay = CONFIG.train_cfg.weight_decay
+    warmup = CONFIG.train_cfg.warmup
+    wandb_config = CONFIG.wandb_config
+    model_dir = CONFIG.model_dir
+    profiling_hdfs_dir = CONFIG.profiling_hdfs_dir
+    validation_config = CONFIG.valid_cfg
 
     if rank == 0 and wandb_config and wandb_config["api_key"] and wandb_config["entity"] and wandb_config["project"]:
         enable_wandb = True
@@ -61,24 +64,31 @@ def training_loop(
         os.environ["WANDB_ENTITY"] = wandb_config["entity"]
         os.environ["WANDB_PROJECT"] = wandb_config["project"]
         os.environ["WANDB_CONFIG_DIR"] = "."
-        wandb.init(config=config, dir=".")
+        wandb.init(config=CONFIG.__dict__, dir=".")
     else:
         enable_wandb = False
 
-    validation_dataloader = None
-    validation_classifier = None
+    validation_dataloader_per_lang = None
+    validation_classifier_per_lang = None
     if validation_config and rank == 0:
-        validation_classifier = zero_shot_classifier(
-            model, validation_config.classnames, validation_config.templates, device
+        uc_id_to_idx_mapping = pickle.load(fsspec.filesystem("hdfs").open(CONFIG.uc_id_to_idx_mapping_path, "rb"))
+        validation_classifier_per_lang = zero_shot_classifier_per_lang(model, tokenizer, device)
+        validation_dataloader_per_lang = create_validation_dataloader_per_lang(
+            validation_config.webdataset_dir_per_lang,
+            validation_config.batch_size,
+            validation_config.num_workers,
+            uc_id_to_idx_mapping,
+            image_transform_val,
+            tokenizer,
         )
-        validation_classifier = validation_classifier.type(torch.float32)
-        validation_dataloader = create_validation_dataloader(
-            validation_config.validation_webdataset_dir, validation_config.batch_size, validation_config.num_workers
-        )
-
+        logger.info("validation_classifier_per_lang and validation_dataloader_per_lang created")
     train_steps_per_epoch = len(trainloader)
     total_steps = train_steps_per_epoch * n_epochs
     logger.info(f"n_epochs: {n_epochs}; train_steps_per_epoch: {train_steps_per_epoch}; " f"total_steps: {total_steps}")
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Total params: {total_params/1e6:.2f}M")
+    logger.info(f"Trainable params: {trainable_params/1e6:.2f}M")
     optimizer = get_adamw_optimize(model.module, weight_decay, learning_rate, beta1, beta2, eps)
     scaler = GradScaler() if precision == "amp" else None
     scheduler = cosine_lr(optimizer, learning_rate, warmup, total_steps)
@@ -116,8 +126,8 @@ def training_loop(
             enable_wandb,
             profiler,
             validation_config,
-            validation_classifier,
-            validation_dataloader,
+            validation_classifier_per_lang,
+            validation_dataloader_per_lang,
         )
     if enable_wandb:
         wandb.finish()
@@ -127,36 +137,54 @@ def training_loop(
         upload_dir(profiling_local_dir, profiling_hdfs_dir)
 
 
-def get_experiment_fn(model_hdfs_path: str, trainset_paths: List[str], batch_size: int, **kwds) -> PytorchExperiment:
+def get_experiment_fn(
+    text_transformer_hdfs_path: str,
+    visual_transformer_hdfs_path: str,
+    tokenizer_hdfs_path: str,
+    trainset_paths: List[str],
+    **kwds,
+) -> PytorchExperiment:
     """Generate tf_yarn PytorchExperiment"""
 
     def _experiment_fn():
-        model = load_pretrained_model(model_hdfs_path, "./" + str(uuid.uuid4()), True)
-        webdataset = create_webdataset(trainset_paths, transform(224, True)).shuffle(1000)
+        model, tokenizer, image_preprocessing_train, image_preprocessing_val = load_model_tokenizer_and_transforms(
+            text_transformer_hdfs_path, visual_transformer_hdfs_path, tokenizer_hdfs_path, "./" + str(uuid.uuid4())
+        )
+        webdataset = create_webdataset(trainset_paths, image_preprocessing_train, tokenizer).shuffle(1000)
         num_workers = dist.get_world_size() if dist.is_initialized() else 1
-        wds = FakeLength(
-            webdataset, int(140000 * len(trainset_paths) / num_workers)
-        )  # 14_000 should be the number of samples per shard?
+        wds = FakeLength(webdataset, int(CONFIG.train_cfg.nb_of_samples / num_workers))
 
         return PytorchExperiment(
             model=model,
-            main_fn=partial(training_loop, **kwds),
+            main_fn=partial(training_loop, image_transform_val=image_preprocessing_val, tokenizer=tokenizer, **kwds),
             train_dataset=wds,
-            dataloader_args=DataLoaderArgs(batch_size=batch_size, num_workers=8, pin_memory=False),
-            n_workers_per_executor=2,
+            dataloader_args=DataLoaderArgs(
+                batch_size=CONFIG.train_cfg.batch_size, num_workers=CONFIG.train_cfg.num_workers, pin_memory=False
+            ),
+            n_workers_per_executor=CONFIG.train_cfg.n_workers_per_executor,
         )
 
     return _experiment_fn
 
 
 if __name__ == "__main__":
-    
-    fs, path = fsspec.core.url_to_fs(CONFIG.trainset_folder)
+    # Create artifacts
+    create_templates_per_lang_x_uc_id()
+    create_uc_id_to_idx_mapping()
+
+    # Launch training
+    fs, path = fsspec.core.url_to_fs(CONFIG.train_cfg.webdataset_dir)
     url_trainset_paths = fs.ls(path, detail=False)
-    url_trainset_paths = ["pipe:hdfs dfs -cat viewfs://root" + path for path in url_trainset_paths]
+    url_trainset_paths = [
+        "pipe:hdfs dfs -cat viewfs://root" + path for path in url_trainset_paths if path.endswith(".tar")
+    ]
     run_on_yarn(
-        experiment_fn=get_experiment_fn(CONFIG.model_hdfs_path, url_trainset_paths, CONFIG.batch_size),
-        task_specs={"worker": TaskSpec(memory=72 * 2**10, vcores=80, instances=2, label=NodeLabel.GPU)},
+        experiment_fn=get_experiment_fn(
+            CONFIG.text_transformer_hdfs_path,
+            CONFIG.visual_transformer_hdfs_path,
+            CONFIG.tokenizer_hdfs_path,
+            url_trainset_paths,
+        ),
+        task_specs={"worker": CONFIG.yarn_worker_spec},
         queue="ml-gpu",
-        # pyenv_zip_path=CONFIG.pyenv_zip_path,
     )

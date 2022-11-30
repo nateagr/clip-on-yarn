@@ -1,23 +1,27 @@
+"""Training scrips"""
 import logging
 import os
 import time
-from typing import Callable, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.distributed as dist
 import torch.distributed.nn
-import wandb
 from tf_yarn.pytorch import model_ckpt
 from torch.cuda.amp import autocast
+from torch.utils.data import DataLoader
 
+import wandb
+from clip_on_yarn.config import ValidationConfig
 from clip_on_yarn.loss import ClipLoss
-from clip_on_yarn.validation.evaluate import ValidationConfig, evaluate
+from clip_on_yarn.model.mclip import mCLIP
+from clip_on_yarn.validation.evaluate import compute_metrics
 
 logger = logging.getLogger()
 
 
 def model_inference(
-    model: torch.nn.Module, images: torch.Tensor, texts: torch.Tensor
+    model: mCLIP, images: torch.Tensor, texts: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """Inference"""
     image_features = model.encode_image(images)
@@ -28,21 +32,21 @@ def model_inference(
 
 
 def train_and_evaluate(
-    model: torch.nn.Module,
-    trainloader: torch.utils.data.dataloader.DataLoader,
+    model: mCLIP,
+    trainloader: DataLoader,
     epoch: int,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: Optional[torch.cuda.amp.GradScaler],
     scheduler: Callable,
     device: str,
     precision: str,
-    model_dir: str,
-    tb_writer,
+    model_dir: Optional[str],
+    tb_writer,  # type: ignore
     enable_wandb: bool,
-    profiler: torch.profiler.profile,
+    profiler: Optional[torch.profiler.profile],
     validation_config: ValidationConfig,
-    validation_classifier: torch.tensor,
-    validation_dataloader: torch.utils.data.dataloader.DataLoader,
+    validation_classifier_per_lang: Optional[Dict[str, torch.Tensor]],
+    validation_dataloader_per_lang: Optional[Dict[str, DataLoader]],
     local_loss: bool = True,
 ) -> None:
     """Train and evaluate for one epoch"""
@@ -52,7 +56,7 @@ def train_and_evaluate(
         percent_complete = 100.0 * i / n_batches_per_epoch
         return f"Train Epoch: {epoch} [{num_samples}/{n_samples_per_epoch  * world_size} ({percent_complete:.0f}%)]\t"
 
-    def _log_metrics(metrics:dict, taining: bool) -> None:
+    def _log_metrics(metrics: dict, taining: bool) -> None:
         for name, val in metrics.items():
             name = f"{'train/' if taining else 'eval/'}" + name
             if tb_writer:
@@ -73,33 +77,32 @@ def train_and_evaluate(
         profiler.start()
 
     logging_n_steps = 100
-    batch_time_acc = 0
+    batch_time_acc = 0.0
     end = time.perf_counter()
     model.train()  # Make sure the model is in train mode
     for i, batch in enumerate(trainloader):
         current_step = n_done_steps + i
         scheduler(current_step)
-
         optimizer.zero_grad()
-
         images = batch["image_tensor"]
-        texts = batch["text_tokens"]
+        text_input_ids = batch["input_ids"]
+        text_attention_mask = batch["attention_mask"]
         images = images.to(device, non_blocking=True)
-        texts = texts.to(device, non_blocking=True)
-
+        text_input_ids = text_input_ids.squeeze().to(device, non_blocking=True)
+        text_attention_mask = text_attention_mask.squeeze().to(device, non_blocking=True)
         batch_size = images.shape[0]
         data_time = time.time() - end
 
         # with automatic mixed precision.
-        if precision == "amp":
+        if precision == "amp" and scaler:
             with autocast():
-                image_features, text_features, logit_scale = model_inference(model.module, images, texts)
+                image_features, text_features, logit_scale = model.module(images, text_input_ids, text_attention_mask)
                 total_loss = loss(image_features, text_features, logit_scale)
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            image_features, text_features, logit_scale = model_inference(model.module, images, texts)
+            image_features, text_features, logit_scale = model.module(images, text_input_ids, text_attention_mask)
             total_loss = loss(image_features, text_features, logit_scale)
             total_loss.backward()
             optimizer.step()
@@ -112,10 +115,21 @@ def train_and_evaluate(
         batch_time_acc += batch_time
         end = time.perf_counter()
 
-        if rank == 0 and validation_config and (i % validation_config.period_in_steps) == 0:
+        if (
+            rank == 0
+            and validation_config
+            and (i % validation_config.period_in_steps) == 0
+            and validation_classifier_per_lang
+            and validation_dataloader_per_lang
+        ):
             logger.info("Starting zero shot evaluation")
-            metrics = evaluate(
-                model, validation_classifier, validation_dataloader, device, precision, validation_config.n_batches
+            metrics = compute_metrics(
+                model,
+                validation_classifier_per_lang,
+                validation_dataloader_per_lang,
+                device,
+                precision,
+                validation_config.steps_per_lang,
             )
             model.train()
             logger.info("Finished zero_shot_eval")
@@ -149,7 +163,7 @@ def train_and_evaluate(
         profiler.stop()
 
     if model_dir:
-        others = dict()
+        others = {}
         if scaler:
             others["scaler"] = scaler.state_dict()
         model_ckpt.save_ckpt(model_dir, model, optimizer, epoch, **others)

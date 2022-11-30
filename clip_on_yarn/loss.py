@@ -2,13 +2,14 @@
 from typing import Tuple
 
 import torch
-from torch import nn as nn
+from torch import nn
+from torch.distributed.nn.functional import all_gather
 from torch.nn import functional as F
 
 
 def gather_features(image_features: torch.Tensor, text_features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
-    all_text_features = torch.cat(torch.distributed.nn.all_gather(text_features), dim=0)
+    all_image_features = torch.cat(all_gather(image_features), dim=0)
+    all_text_features = torch.cat(all_gather(text_features), dim=0)
     return all_image_features, all_text_features
 
 

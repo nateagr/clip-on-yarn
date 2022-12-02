@@ -9,7 +9,8 @@ from typing import List
 import fsspec
 import torch
 import torch.distributed as dist
-from tf_yarn.pytorch import DataLoaderArgs, PytorchExperiment, model_ckpt, run_on_yarn
+from tf_yarn.pytorch import (DataLoaderArgs, PytorchExperiment, model_ckpt,
+                             run_on_yarn)
 from torch.cuda.amp import GradScaler
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -24,8 +25,10 @@ from clip_on_yarn.train import train_and_evaluate
 from clip_on_yarn.utils.hdfs import upload_dir
 from clip_on_yarn.utils.profiler import create_profiler
 from clip_on_yarn.utils.seed import seed_everything
-from clip_on_yarn.validation.evaluate import create_validation_dataloader_per_lang, zero_shot_classifier_per_lang
-from clip_on_yarn.validation.templates import create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping
+from clip_on_yarn.validation.evaluate import (
+    create_validation_dataloader_per_lang, zero_shot_classifier_per_lang)
+from clip_on_yarn.validation.templates import (
+    create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping)
 
 logger = logging.getLogger()
 
@@ -69,10 +72,8 @@ def training_loop(
         enable_wandb = False
 
     validation_dataloader_per_lang = None
-    validation_classifier_per_lang = None
     if validation_config and rank == 0:
         uc_id_to_idx_mapping = pickle.load(fsspec.filesystem("hdfs").open(CONFIG.uc_id_to_idx_mapping_path, "rb"))
-        validation_classifier_per_lang = zero_shot_classifier_per_lang(model, tokenizer, device)
         validation_dataloader_per_lang = create_validation_dataloader_per_lang(
             validation_config.webdataset_dir_per_lang,
             validation_config.batch_size,
@@ -126,8 +127,8 @@ def training_loop(
             enable_wandb,
             profiler,
             validation_config,
-            validation_classifier_per_lang,
             validation_dataloader_per_lang,
+            tokenizer,
         )
     if enable_wandb:
         wandb.finish()

@@ -10,12 +10,13 @@ import torch.distributed.nn
 from tf_yarn.pytorch import model_ckpt
 from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 import wandb
 from clip_on_yarn.config import ValidationConfig
 from clip_on_yarn.loss import ClipLoss
 from clip_on_yarn.model.mclip import mCLIP
-from clip_on_yarn.validation.evaluate import compute_metrics
+from clip_on_yarn.validation.evaluate import compute_metrics, zero_shot_classifier_per_lang
 
 logger = logging.getLogger()
 
@@ -45,8 +46,8 @@ def train_and_evaluate(
     enable_wandb: bool,
     profiler: Optional[torch.profiler.profile],
     validation_config: ValidationConfig,
-    validation_classifier_per_lang: Optional[Dict[str, torch.Tensor]],
     validation_dataloader_per_lang: Optional[Dict[str, DataLoader]],
+    tokenizer: PreTrainedTokenizer,
     local_loss: bool = True,
 ) -> None:
     """Train and evaluate for one epoch"""
@@ -119,10 +120,11 @@ def train_and_evaluate(
             rank == 0
             and validation_config
             and (i % validation_config.period_in_steps) == 0
-            and validation_classifier_per_lang
             and validation_dataloader_per_lang
         ):
             logger.info("Starting zero shot evaluation")
+            # Recompute the new class embeddings
+            validation_classifier_per_lang = zero_shot_classifier_per_lang(model, tokenizer, device)
             metrics = compute_metrics(
                 model,
                 validation_classifier_per_lang,

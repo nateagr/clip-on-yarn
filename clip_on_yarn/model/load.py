@@ -1,19 +1,13 @@
-"""mCLIP utils"""
-import logging
+"""Utils to load mCLIP model"""
 import os
 
 import fsspec
-import torch
-import torch.nn.functional as F
 from clip_on_yarn.config import CONFIG
-from clip_on_yarn.model.utils import apply_freezing_strategy
+from clip_on_yarn.model.model import mCLIP
 from open_clip.factory import load_checkpoint
 from open_clip.model import CLIP
 from open_clip.transform import image_transform
-from torch import nn
 from transformers import AutoTokenizer
-
-logger = logging.getLogger()
 
 CLIP_MODEL_CONFIG = {
     "embed_dim": 640,
@@ -43,7 +37,6 @@ def _load_text_transformer_and_tokenizer(text_transformer_hdfs_path: str, tokeni
     fs = fsspec.filesystem("hdfs")
     fs.get(text_transformer_hdfs_path, local_path, recursive=True)
     text_transfomer = CONFIG.text_model.from_pretrained(local_path)
-
     # Load tokenizer
     tokenizer_name = os.path.basename(tokenizer_hdfs_path)
     local_path = os.path.join(download_root, tokenizer_name)
@@ -69,23 +62,4 @@ def load_model_tokenizer_and_transforms(
         image_preprocessing_val,
     ) = _load_visual_transformer_and_transformers(visual_transformer_hdfs_path, download_root)
     model = mCLIP(text_transformer, visual_transformer, logit_scale)
-    if CONFIG.apply_freezing_strategy:
-        model = apply_freezing_strategy(model)
     return model, tokenizer, image_preprocessing_train, image_preprocessing_val
-
-
-class mCLIP(nn.Module):
-    """Multilingual CLIP"""
-
-    def __init__(self, text_transformer: nn.Module, visual_transformer: nn.Module, logit_scale: nn.Parameter) -> None:
-        super().__init__()
-        self.text_transformer = text_transformer
-        self.visual_transformer = visual_transformer
-        self.logit_scale = logit_scale
-
-    def forward(self, image: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        text_features = self.text_transformer(input_ids, attention_mask)
-        text_features = F.normalize(text_features, dim=-1)
-        image_features = self.visual_transformer(image)
-        image_features = F.normalize(image_features, dim=-1)
-        return image_features, text_features, self.logit_scale.exp()

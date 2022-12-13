@@ -4,7 +4,7 @@ from typing import Callable
 import numpy as np
 from torch.optim import AdamW, Optimizer
 
-from clip_on_yarn.model.mclip import mCLIP
+from clip_on_yarn.model.model import mCLIP
 
 
 def _assign_learning_rate(optimizer: Optimizer, new_lr: float) -> None:

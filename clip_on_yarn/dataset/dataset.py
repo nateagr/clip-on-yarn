@@ -1,12 +1,14 @@
 """Webdataset functions"""
 import io
 import json
+import math
 import os
 from functools import partial
-from typing import List, Union
+from typing import Dict, List, Tuple, Union
 
 import fsspec
 import webdataset as wds
+from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
 from PIL import Image
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -89,13 +91,20 @@ def create_webdataset(
     enable_image: bool = True,
     enable_metadata: bool = False,
     image_key: str = "image.jpg",
-    caption_key: Union[str, List[str]] = ["title.txt", "description.txt"],
+    caption_key: Union[str, List[str]] = "title.txt",
     metadata_key: str = "metadata.json",
     cache_path: str = None,
 ) -> wds.WebDataset:
     """Create the WebDataset pipeline"""
-    dataset = wds.WebDataset(urls, cache_dir=cache_path, cache_size=10**10, handler=wds.handlers.warn_and_stop)
-
+    dataset = wds.PytorchShardList(urls, shuffle=False, split_by_node=False)
+    dataset = dataset.then(wds.tariterators.url_opener, handler=wds.handlers.warn_and_continue)
+    if cache_path:
+        dataset = dataset.then(
+            wds.shardcache.cache_shards,
+            cache_dir=cache_path,
+        )
+    dataset = dataset.then(wds.tariterators.tar_file_expander, handler=wds.handlers.warn_and_continue)
+    dataset = dataset.then(wds.tariterators.group_by_keys)
     filter_fn = partial(
         filter_row,
         caption_key=caption_key,
@@ -118,15 +127,44 @@ def create_webdataset(
         enable_text=enable_text,
         enable_metadata=enable_metadata,
     )
-    transformed_dataset = filtered_dataset.map(transform_fn, handler=wds.handlers.warn_and_stop)
+    transformed_dataset = filtered_dataset.map(transform_fn, handler=wds.handlers.warn_and_continue)
     return transformed_dataset
 
 
-def get_number_of_samples(dataset_path: str) -> int:
+def get_paths_and_nb_of_samples(dataset_path: str) -> Tuple[List[str], List[int]]:
+    """Return shard paths and the number of samples"""
     fs = fsspec.filesystem("hdfs")
-    n_samples = 0
+    shard_ids, n_samples = [], []
     with fs.open(os.path.join(dataset_path, "metadata")) as f:
         metadata = json.load(f)
     for item in metadata.values():
-        n_samples += item["nb_of_samples"]
-    return n_samples
+        n_samples.append(item["nb_of_samples"])
+        shard_ids.extend(item["shard_ids"])
+    key_format = math.ceil(math.log10(max(shard_ids)))
+
+    paths = [os.path.join(dataset_path, f"{shard_id:0{key_format}d}.tar") for shard_id in shard_ids]
+    return paths, n_samples
+
+
+def get_number_of_samples(dataset_path: str) -> int:
+    """Compute the number of samples include"""
+    _, nb_of_samples = get_paths_and_nb_of_samples(dataset_path)
+    return sum(nb_of_samples)
+
+
+def generate_wds_paths_and_samples_per_lang(
+    base_path: str, max_samples=500_000
+) -> Tuple[Dict[str, List[str]], Dict[str, int]]:
+    """Return paths and the number of samples corresponding, capped by the max_samples parameter"""
+    webdataset_paths_per_lang: Dict[str, List[str]] = {}
+    samples_per_lang: Dict[str, int] = {}
+    for lang in CAT_LANGUAGES_OF_INTEREST:
+        paths, n_samples = get_paths_and_nb_of_samples(os.path.join(base_path, f"language={lang}"))
+        webdataset_paths_per_lang[lang] = []
+        samples_per_lang[lang] = 0
+        for p, n in zip(paths, n_samples):
+            webdataset_paths_per_lang[lang].append(p)
+            samples_per_lang[lang] += n
+            if samples_per_lang[lang] > max_samples:
+                break
+    return webdataset_paths_per_lang, samples_per_lang

@@ -6,11 +6,12 @@ from functools import partial
 from typing import Any, Dict, List
 
 import fsspec
+import numpy as np
 import torch
 import torch.nn.functional as F
 from clip_on_yarn.config import CONFIG
 from clip_on_yarn.dataset.dataset import create_webdataset
-from clip_on_yarn.model.mclip import mCLIP
+from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
 from tf_yarn.pytorch.model_ckpt import _unwrap_model
 from torch.utils.data import DataLoader
@@ -27,12 +28,8 @@ def extract_image_label(row, uc_id_to_idx_mapping):
     return row["image_tensor"], label
 
 
-def filter_unsupported_uc_id(row, uc_ids):
-    return row["metadata"]["uc_id"] in uc_ids
-
-
 def create_validation_dataloader_per_lang(
-    webdataset_dir_per_lang: Dict[str, str],
+    webdataset_paths_per_lang: Dict[str, List[str]],
     batch_size: int,
     num_workers: int,
     uc_id_to_idx_mapping: Dict[int, int],
@@ -43,13 +40,18 @@ def create_validation_dataloader_per_lang(
     dataloader_per_lang = {}
     for lang in CAT_LANGUAGES_OF_INTEREST:
         dataloader_per_lang[lang] = create_validation_dataloader(
-            webdataset_dir_per_lang[lang], batch_size, num_workers, uc_id_to_idx_mapping, image_transform_val, tokenizer
+            webdataset_paths_per_lang[lang],
+            batch_size,
+            num_workers,
+            uc_id_to_idx_mapping,
+            image_transform_val,
+            tokenizer,
         )
     return dataloader_per_lang
 
 
 def create_validation_dataloader(
-    validation_webdataset_dir: str,
+    webdataset_paths: List[str],
     batch_size: int,
     num_workers: int,
     uc_id_to_idx_mapping: Dict[int, int],
@@ -57,21 +59,18 @@ def create_validation_dataloader(
     tokenizer: PreTrainedTokenizer,
 ) -> DataLoader:
     """Create validation dataloader"""
-    fs, path = fsspec.core.url_to_fs(validation_webdataset_dir)
-    url_paths = [
-        "pipe:hdfs dfs -cat viewfs://root" + path for path in fs.ls(path, detail=False) if path.endswith(".tar")
-    ]
+    url_paths = ["pipe:hdfs dfs -cat viewfs://root" + path for path in webdataset_paths]
     extract_fb = partial(extract_image_label, uc_id_to_idx_mapping=uc_id_to_idx_mapping)
     validation_dataset = create_webdataset(url_paths, image_transform_val, tokenizer, enable_metadata=True).map(
         extract_fb
     )
-    return DataLoader(validation_dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+    return DataLoader(validation_dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=False)
 
 
 def zero_shot_classifier(
     model: mCLIP,
     tokenizer: PreTrainedTokenizer,
-    templates_per_uc_id: Dict[int, List[str]],
+    templates_per_uc_id: Dict[int, np.ndarray],
     device: str,
 ) -> torch.Tensor:
     """Create class embeddings"""
@@ -79,7 +78,7 @@ def zero_shot_classifier(
     unwrapped_model.eval()  # Make sure the model is in eval mode
     with torch.no_grad():
         zeroshot_classifier = []
-        for templates in tqdm(templates_per_uc_id.values()):
+        for templates in templates_per_uc_id.values():
             tokenized_text = tokenizer(
                 templates.tolist(), padding="max_length", truncation=True, max_length=77, return_tensors="pt"
             )
@@ -127,9 +126,10 @@ def evaluate(
     unwrapped_model = _unwrap_model(model)
     unwrapped_model.eval()  # Make sure the model is in eval mode
     autocast = torch.cuda.amp.autocast if precision == "amp" else suppress
+    logger.info(f"Precision: {precision}")
     with torch.no_grad():
         top1, top5, top10, n = 0.0, 0.0, 0.0, 0.0
-        for i, (images, target) in enumerate(dataloader):
+        for i, (images, target) in tqdm(enumerate(dataloader), total=n_steps):
             images = images.to(device)
             target = target.to(device)
 
@@ -145,7 +145,6 @@ def evaluate(
             n += images.size(0)
             if n_steps and i >= n_steps:
                 break
-
     top1 = top1 / n
     top5 = top5 / n
     top10 = top10 / n

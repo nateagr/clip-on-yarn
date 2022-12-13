@@ -2,34 +2,26 @@
 import logging
 import os
 import time
-from typing import Callable, Dict, Optional, Tuple
+from tempfile import TemporaryDirectory
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.distributed as dist
 import torch.distributed.nn
-from tf_yarn.pytorch import model_ckpt
+from cluster_pack import filesystem
+from tf_yarn.pytorch.model_ckpt import _unwrap_model
 from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 import wandb
-from clip_on_yarn.config import ValidationConfig
+from clip_on_yarn.config import CONFIG, ValidationConfig
 from clip_on_yarn.loss import ClipLoss
-from clip_on_yarn.model.mclip import mCLIP
+from clip_on_yarn.model.freeze import apply_freezing_strategy
+from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.validation.evaluate import compute_metrics, zero_shot_classifier_per_lang
 
 logger = logging.getLogger()
-
-
-def model_inference(
-    model: mCLIP, images: torch.Tensor, texts: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    """Inference"""
-    image_features = model.encode_image(images)
-    text_features = model.encode_text(texts)
-    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-    return image_features, text_features, model.logit_scale.exp()
 
 
 def train_and_evaluate(
@@ -45,7 +37,7 @@ def train_and_evaluate(
     tb_writer,  # type: ignore
     enable_wandb: bool,
     profiler: Optional[torch.profiler.profile],
-    validation_config: ValidationConfig,
+    validation_config: Optional[ValidationConfig],
     validation_dataloader_per_lang: Optional[Dict[str, DataLoader]],
     tokenizer: PreTrainedTokenizer,
     local_loss: bool = True,
@@ -67,7 +59,8 @@ def train_and_evaluate(
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-
+    if CONFIG.apply_freezing_strategy:
+        model.module = apply_freezing_strategy(model.module, epoch)
     loss = ClipLoss(local_loss=local_loss, rank=rank, world_size=world_size)
 
     n_batches_per_epoch = len(trainloader)
@@ -76,7 +69,6 @@ def train_and_evaluate(
 
     if profiler:
         profiler.start()
-
     logging_n_steps = 100
     batch_time_acc = 0.0
     end = time.perf_counter()
@@ -84,7 +76,7 @@ def train_and_evaluate(
     for i, batch in enumerate(trainloader):
         current_step = n_done_steps + i
         scheduler(current_step)
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         images = batch["image_tensor"]
         text_input_ids = batch["input_ids"]
         text_attention_mask = batch["attention_mask"]
@@ -96,17 +88,40 @@ def train_and_evaluate(
 
         # with automatic mixed precision.
         if precision == "amp" and scaler:
-            with autocast():
+            if ((i + 1) % CONFIG.train_cfg.accumulate_grad_batches == 0) or (i + 1 == n_batches_per_epoch):
+                with autocast():
+                    image_features, text_features, logit_scale = model.module(
+                        images, text_input_ids, text_attention_mask
+                    )
+                    total_loss = loss(image_features, text_features, logit_scale)
+                    total_loss = total_loss / CONFIG.train_cfg.accumulate_grad_batches
+                scaler.scale(total_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                with model.no_sync():
+                    with autocast():
+                        image_features, text_features, logit_scale = model.module(
+                            images, text_input_ids, text_attention_mask
+                        )
+                        total_loss = loss(image_features, text_features, logit_scale)
+                        total_loss = total_loss / CONFIG.train_cfg.accumulate_grad_batches
+                    scaler.scale(total_loss).backward()
+        else:
+            if ((i + 1) % CONFIG.train_cfg.accumulate_grad_batches == 0) or (i + 1 == n_batches_per_epoch):
                 image_features, text_features, logit_scale = model.module(images, text_input_ids, text_attention_mask)
                 total_loss = loss(image_features, text_features, logit_scale)
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            image_features, text_features, logit_scale = model.module(images, text_input_ids, text_attention_mask)
-            total_loss = loss(image_features, text_features, logit_scale)
-            total_loss.backward()
-            optimizer.step()
+                total_loss = total_loss / CONFIG.train_cfg.accumulate_grad_batches
+                total_loss.backward()
+                optimizer.step()
+            else:
+                with model.no_sync():
+                    image_features, text_features, logit_scale = model.module(
+                        images, text_input_ids, text_attention_mask
+                    )
+                    total_loss = loss(image_features, text_features, logit_scale)
+                    total_loss = total_loss / CONFIG.train_cfg.accumulate_grad_batches
+                    total_loss.backward()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
         with torch.no_grad():
@@ -137,7 +152,7 @@ def train_and_evaluate(
             logger.info("Finished zero_shot_eval")
             logger.info(f"[{os.getpid()}] {_get_progress()}" f"zero shot evaluation metrics: {metrics}")
             _log_metrics(metrics, False)
-
+        dist.barrier()
         if (i % logging_n_steps) == 0:
             logger.info(
                 f"[{os.getpid()}] {_get_progress()}"
@@ -164,8 +179,22 @@ def train_and_evaluate(
     if profiler:
         profiler.stop()
 
-    if model_dir:
+    dist.barrier()
+    if model_dir and rank == 0:
         others = {}
         if scaler:
             others["scaler"] = scaler.state_dict()
-        model_ckpt.save_ckpt(model_dir, model, optimizer, epoch, **others)
+        state = {
+            "model": _unwrap_model(model).state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": epoch,
+            **others,
+        }
+        resolved_fs, path = filesystem.resolve_filesystem_and_path(model_dir)
+        if not resolved_fs.exists(model_dir):
+            resolved_fs.mkdir(model_dir)
+        model_ckpt_path = os.path.join(path, f"model_{epoch}.pt")
+        with TemporaryDirectory() as tmpdir:
+            tmp_file = os.path.join(tmpdir, f"model_{epoch}.pt")
+            torch.save(state, tmp_file)
+            resolved_fs.put(tmp_file, model_ckpt_path)

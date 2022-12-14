@@ -1,11 +1,12 @@
 """Configuration"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from tf_yarn.pytorch import NodeLabel, TaskSpec
 
 from clip_on_yarn.data.dataset import (generate_wds_paths_and_samples_per_lang,
                                        get_number_of_samples)
 from clip_on_yarn.model.model import mDeBERTaTextEncoder
-from tf_yarn.pytorch import NodeLabel, TaskSpec
 
 
 class SingletonMetaclass(type):
@@ -44,17 +45,19 @@ class TrainingConfig:
 @dataclass
 class ValidationConfig:
     """Validation parameters"""
-
-    _webdataset_paths_per_lang, _samples_per_lang = generate_wds_paths_and_samples_per_lang(
-        base_path="/user/cailimage/dev/users/r.fabre/mclip_finetuning/valid", max_samples=100_000
-    )
-    webdataset_paths_per_lang: Dict[str, List[str]] = _webdataset_paths_per_lang
-    steps_per_lang: Dict[str, int] = {k: v // 32 for k, v in _samples_per_lang.items()}
+    webdataset_paths_per_lang: Dict[str, List[str]] = field(default_factory=dict)
+    steps_per_lang: Dict[str, int] = field(default_factory=dict)
     max_samples: int = 100_000
     batch_size: int = 64
     num_workers: int = 0
     period_in_steps: int = int(1e10)  # validation period in steps, int() for linting purposes
-
+    
+    def __post_init__(self) -> None:
+        webdataset_paths_per_lang, samples_per_lang = generate_wds_paths_and_samples_per_lang(
+            base_path="/user/cailimage/dev/users/r.fabre/mclip_finetuning/valid", max_samples=100_000
+        )
+        self.webdataset_paths_per_lang = webdataset_paths_per_lang
+        self.steps_per_lang = {k: v // 32 for k, v in samples_per_lang.items()}
 
 class Config(metaclass=SingletonMetaclass):
     """Singleton containing all the configuration"""

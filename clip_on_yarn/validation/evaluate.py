@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from clip_on_yarn.config import CONFIG
-from clip_on_yarn.dataset.dataset import create_webdataset
+from clip_on_yarn.data.dataset import create_webdataset
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
 from tf_yarn.pytorch.model_ckpt import _unwrap_model

@@ -16,7 +16,7 @@ from webdataset.extradatasets import FakeLength
 
 import wandb
 from clip_on_yarn.config import CONFIG
-from clip_on_yarn.dataset.dataset import create_webdataset
+from clip_on_yarn.data.dataset import create_webdataset
 from clip_on_yarn.model.load import load_model_tokenizer_and_transforms
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.optimizer import cosine_lr, get_adamw_optimize

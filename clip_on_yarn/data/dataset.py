@@ -4,7 +4,7 @@ import json
 import math
 import os
 from functools import partial
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import fsspec
 import webdataset as wds
@@ -93,7 +93,7 @@ def create_webdataset(
     image_key: str = "image.jpg",
     caption_key: Union[str, List[str]] = "title.txt",
     metadata_key: str = "metadata.json",
-    cache_path: str = None,
+    cache_path: Optional[str] = None,
 ) -> wds.WebDataset:
     """Create the WebDataset pipeline"""
     dataset = wds.PytorchShardList(urls, shuffle=False, split_by_node=False)
@@ -165,6 +165,6 @@ def generate_wds_paths_and_samples_per_lang(
         for p, n in zip(paths, n_samples):
             webdataset_paths_per_lang[lang].append(p)
             samples_per_lang[lang] += n
-            if samples_per_lang[lang] > max_samples:
+            if samples_per_lang[lang] >= max_samples:
                 break
     return webdataset_paths_per_lang, samples_per_lang

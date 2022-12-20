@@ -80,14 +80,3 @@ class Taxonomy:
             category = _extract_category(line, categories_by_name)
             categories_by_name[category.name] = category
         return cls(list(categories_by_name.values()))
-
-
-def get_uc_lv4_id_name_mapping_per_lang() -> Dict[str, Dict[int, str]]:
-    """Create UC lv4 category id - name mapping for each language we have in our catalog"""
-    uc_lv4_id_name_mapping_per_lang = {}
-    for lang in Language:
-        taxonomy = Taxonomy.build(lang)
-        filtered_taxonomy = filter_taxonomy_to_keep_last_level(taxonomy)
-        uc_lv4_id_name_mapping = {k: v.name for k, v in filtered_taxonomy.category_id_to_category.items()}
-        uc_lv4_id_name_mapping_per_lang[lang.value.split("-")[0]] = uc_lv4_id_name_mapping
-    return uc_lv4_id_name_mapping_per_lang

@@ -2,9 +2,8 @@
 from typing import Callable
 
 import numpy as np
+import torch
 from torch.optim import AdamW, Optimizer
-
-from clip_on_yarn.model.model import mCLIP
 
 
 def _assign_learning_rate(optimizer: Optimizer, new_lr: float) -> None:
@@ -33,7 +32,12 @@ def cosine_lr(optimizer: Optimizer, base_lr: float, warmup_length: int, steps: i
 
 
 def get_adamw_optimize(
-    model: mCLIP, weight_decay: float, learning_rate: float, beta1: float, beta2: float, eps: float
+    model: torch.nn.Module,
+    weight_decay: float,
+    learning_rate: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
 ) -> Optimizer:
     """Setup and return the AdamW optimizer"""
     exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or "logit_scale" in n

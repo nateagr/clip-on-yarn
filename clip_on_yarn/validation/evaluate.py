@@ -1,9 +1,10 @@
 """Evaluation scripts"""
+import gc
 import logging
 import pickle
 from contextlib import suppress
 from functools import partial
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import fsspec
 import numpy as np
@@ -16,7 +17,6 @@ from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
 from tf_yarn.pytorch.model_ckpt import _unwrap_model
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
-from tqdm import tqdm
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 logger = logging.getLogger()
@@ -76,7 +76,7 @@ def zero_shot_classifier(
     """Create class embeddings"""
     unwrapped_model = _unwrap_model(model)
     unwrapped_model.eval()  # Make sure the model is in eval mode
-    with torch.no_grad():
+    with torch.inference_mode():
         zeroshot_classifier = []
         for templates in templates_per_uc_id.values():
             tokenized_text = tokenizer(
@@ -90,18 +90,6 @@ def zero_shot_classifier(
             zeroshot_classifier.append(class_embedding)
     # stack along second dimension to avoid transpose when matrix multiplication
     return torch.stack(zeroshot_classifier, dim=1).to(device).type(torch.float32)
-
-
-def zero_shot_classifier_per_lang(model: mCLIP, tokenizer: PreTrainedTokenizer, device: str) -> Dict[str, torch.Tensor]:
-    """Create class embeddings per lang"""
-    classifier_per_lang = {}
-    templates_per_uc_id_x_lang = pickle.load(
-        fsspec.filesystem("hdfs").open(CONFIG.templates_per_lang_x_uc_id_path, "rb")
-    )
-    for lang in CAT_LANGUAGES_OF_INTEREST:
-        logger.info(f"Creating {lang} classifier")
-        classifier_per_lang[lang] = zero_shot_classifier(model, tokenizer, templates_per_uc_id_x_lang[lang], device)
-    return classifier_per_lang
 
 
 def accuracy(logits: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> List[float]:
@@ -120,16 +108,16 @@ def evaluate(
     dataloader: DataLoader,
     device: str,
     precision: str,
-    n_steps: int = None,
+    n_steps: Optional[int] = None,
 ) -> dict:
     """Evaluate the accuracies of the model"""
     unwrapped_model = _unwrap_model(model)
     unwrapped_model.eval()  # Make sure the model is in eval mode
     autocast = torch.cuda.amp.autocast if precision == "amp" else suppress
     logger.info(f"Precision: {precision}")
-    with torch.no_grad():
+    with torch.inference_mode():
         top1, top5, top10, n = 0.0, 0.0, 0.0, 0.0
-        for i, (images, target) in tqdm(enumerate(dataloader), total=n_steps):
+        for i, (images, target) in enumerate(dataloader):
             images = images.to(device)
             target = target.to(device)
 
@@ -153,7 +141,7 @@ def evaluate(
 
 def compute_metrics(
     model: mCLIP,
-    classifier_per_lang: Dict[str, torch.Tensor],
+    tokenizer: PreTrainedTokenizer,
     dataloader_per_lang: Dict[str, DataLoader],
     device: str,
     precision: str,
@@ -161,15 +149,22 @@ def compute_metrics(
 ) -> Dict[str, Any]:
     """Compute validation metrics"""
     metrics = {}
+    templates_per_uc_id_x_lang = pickle.load(
+        fsspec.filesystem("hdfs").open(CONFIG.templates_per_lang_x_uc_id_path, "rb")
+    )
     for lang in CAT_LANGUAGES_OF_INTEREST:
         logger.info(f"Computing {lang} evaluation metrics")
+        classifier = zero_shot_classifier(model, tokenizer, templates_per_uc_id_x_lang[lang], device)
         lang_metrics = evaluate(
             model,
-            classifier=classifier_per_lang[lang],
+            classifier=classifier,
             dataloader=dataloader_per_lang[lang],
             device=device,
             precision=precision,
             n_steps=steps_per_lang[lang],
         )
         metrics.update({f"{lang}_{k}": v for k, v in lang_metrics.items()})
+        del classifier
+        torch.cuda.empty_cache()
+        gc.collect()
     return metrics

@@ -73,7 +73,7 @@ def _create_and_translate_captions(
         print(f"Processing google_category_lvl_4: {google_category_lvl_4}")
         category_name = TAXONOMY.category_id_to_category[google_category_lvl_4].name
         captions = {"en": [f(category_name) for f in TEMPLATES_EN]}
-        with torch.no_grad():
+        with torch.inference_mode():
             for lang in CAT_LANGUAGES_OF_INTEREST:
                 if lang == "en":
                     continue

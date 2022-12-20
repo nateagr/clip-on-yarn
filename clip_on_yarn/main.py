@@ -8,15 +8,15 @@ from functools import partial
 import fsspec
 import torch
 import torch.distributed as dist
+import wandb
 from tf_yarn.pytorch import DataLoaderArgs, PytorchExperiment, model_ckpt, run_on_yarn
 from torch.cuda.amp import GradScaler
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
 from webdataset.extradatasets import FakeLength
 
-import wandb
 from clip_on_yarn.config import CONFIG
-from clip_on_yarn.data.dataset import create_webdataset
+from clip_on_yarn.data.dataset import create_webdataset, generate_wds_paths_and_samples_per_lang
 from clip_on_yarn.model.load import load_model_tokenizer_and_transforms
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.optimizer import cosine_lr, get_adamw_optimize
@@ -150,12 +150,20 @@ def get_experiment_fn(
         webdataset = create_webdataset(url_trainset_paths, image_preprocessing_train, tokenizer)
         num_workers = dist.get_world_size() if dist.is_initialized() else 1
         wds = FakeLength(webdataset, int(CONFIG.train_cfg.nb_of_samples / num_workers))
+
+        if CONFIG.valid_cfg:
+            webdataset_paths_per_lang, samples_per_lang = generate_wds_paths_and_samples_per_lang(
+                base_path="/user/cailimage/dev/users/r.fabre/mclip_finetuning/valid",
+                max_samples=CONFIG.valid_cfg.max_samples,
+            )
+            CONFIG.valid_cfg.webdataset_paths_per_lang = webdataset_paths_per_lang
+            CONFIG.valid_cfg.steps_per_lang = {k: v // CONFIG.valid_cfg.batch_size for k, v in samples_per_lang.items()}
         return PytorchExperiment(
             model=model,
             main_fn=partial(training_loop, image_transform_val=image_preprocessing_val, tokenizer=tokenizer, **kwds),
             train_dataset=wds,
             dataloader_args=DataLoaderArgs(
-                batch_size=CONFIG.train_cfg.batch_size, num_workers=CONFIG.train_cfg.num_workers, pin_memory=False
+                batch_size=CONFIG.train_cfg.batch_size, num_workers=CONFIG.train_cfg.num_workers, pin_memory=True
             ),
             n_workers_per_executor=CONFIG.train_cfg.n_workers_per_executor,
         )
@@ -178,4 +186,5 @@ if __name__ == "__main__":
         ),
         task_specs={"worker": CONFIG.yarn_worker_spec},
         queue="ml-gpu",
+        pyenv_zip_path="viewfs://root/user/r.fabre/envs/.venv.pex.zip",
     )

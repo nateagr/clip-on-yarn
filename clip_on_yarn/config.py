@@ -4,8 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from tf_yarn.pytorch import NodeLabel, TaskSpec
 
-from clip_on_yarn.data.dataset import (generate_wds_paths_and_samples_per_lang,
-                                       get_number_of_samples)
+from clip_on_yarn.data.dataset import get_number_of_samples
 from clip_on_yarn.model.model import mDeBERTaTextEncoder
 
 
@@ -26,38 +25,33 @@ class TrainingConfig:
     """Training parameters"""
 
     webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/mclip_finetuning/train"  # Path to webdataset
-    batch_size: int = 64
-    num_workers: int = 16
+    batch_size: int = 32
+    num_workers: int = 8
     n_workers_per_executor: int = 2
-    n_epochs: int = 10
+    n_epochs: int = 5
     precision: str = "fp32"
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-5
     beta1: float = 0.9
     beta2: float = 0.98
     eps: float = 1.0e-6
     weight_decay: float = 0.2
-    warmup: int = 200_000  # number of steps to warm up
+    warmup: int = 625_000  # number of steps to warm up, 1/4 of all the data
     aggregate: bool = True  # whether to gather all image and text embeddings
     nb_of_samples: int = get_number_of_samples("/user/cailimage/dev/users/r.fabre/mclip_finetuning/train")
-    accumulate_grad_batches: int = 16
+    accumulate_grad_batches: int = 64  # 2048 samples per batch per per GPU
 
 
 @dataclass
 class ValidationConfig:
     """Validation parameters"""
+
     webdataset_paths_per_lang: Dict[str, List[str]] = field(default_factory=dict)
     steps_per_lang: Dict[str, int] = field(default_factory=dict)
-    max_samples: int = 100_000
-    batch_size: int = 64
+    max_samples: int = 50_000
+    batch_size: int = 32
     num_workers: int = 0
-    period_in_steps: int = int(1e10)  # validation period in steps, int() for linting purposes
-    
-    def __post_init__(self) -> None:
-        webdataset_paths_per_lang, samples_per_lang = generate_wds_paths_and_samples_per_lang(
-            base_path="/user/cailimage/dev/users/r.fabre/mclip_finetuning/valid", max_samples=100_000
-        )
-        self.webdataset_paths_per_lang = webdataset_paths_per_lang
-        self.steps_per_lang = {k: v // 32 for k, v in samples_per_lang.items()}
+    period_in_steps: int = 300_000  # validation period in steps
+
 
 class Config(metaclass=SingletonMetaclass):
     """Singleton containing all the configuration"""

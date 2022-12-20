@@ -8,27 +8,17 @@ logger = logging.getLogger()
 
 
 def _unfreeze_last_n_layers_of_vit(model: torch.nn.Module, n: int) -> torch.nn.Module:
-    unfreeze_last_n_layers(model.visual_transformer, n, num_layers=11)
+    unfreeze_last_n_layers(model.visual_transformer, n, num_layers=12)
     # Unfreeze layers after transformer
     unfreeze_layer(model.visual_transformer, "ln_post")
-    return model
-
-
-def _unfreeze_last_n_layers_of_xlm_roberta_large(model: torch.nn.Module, n: int) -> torch.nn.Module:
-    unfreeze_last_n_layers(model.text_transformer.transformer, n, num_layers=23)
-    # Unfreeze layers after transformer
-    unfreeze_layer(model.text_transformer.transformer, "pooler")
-    unfreeze_layer(model.text_transformer, "linear_transformation")
-    return model
 
 
 def _unfreeze_last_n_layers_of_mdeberta(model: torch.nn.Module, n: int) -> torch.nn.Module:
-    unfreeze_last_n_layers(model.text_transformer.transformer, n, num_layers=11)
+    unfreeze_last_n_layers(model.text_transformer.transformer, n, num_layers=12)
     # Unfreeze layers after transformer
     unfreeze_layer(model.text_transformer.transformer, "rel_embeddings")
-    unfreeze_layer(model.text_transformer.transformer, "LayerNorm")
+    unfreeze_layer(model.text_transformer.transformer, "encoder.LayerNorm")
     unfreeze_layer(model.text_transformer, "linear_transformation")
-    return model
 
 
 def unfreeze_last_n_layers_of_transformers(model: torch.nn.Module, n: int) -> torch.nn.Module:
@@ -36,7 +26,6 @@ def unfreeze_last_n_layers_of_transformers(model: torch.nn.Module, n: int) -> to
     _unfreeze_last_n_layers_of_vit(model, n)
     _unfreeze_last_n_layers_of_mdeberta(model, n)
     model.logit_scale.requires_grad = True
-    return model
 
 
 def log_parameters(model: torch.nn.Module) -> None:
@@ -47,16 +36,21 @@ def log_parameters(model: torch.nn.Module) -> None:
     logger.info(f"Trainable params: {trainable_params/1e6:.2f}M")
 
 
-def apply_freezing_strategy(model: torch.nn.Module, epoch: int) -> torch.nn.Module:
+def apply_freezing_strategy(model: torch.nn.Module, step: int, optimizer) -> torch.nn.Module:
     """Define and apply the freezing strategy to the model"""
     # freeze visual transformer for n epoch such that it will act as a teacher for the text transformer
-    freeze_model(model)
-    N_VISUAL_FREEZING_EPOCH = 1
-    if epoch < N_VISUAL_FREEZING_EPOCH:
-        _unfreeze_last_n_layers_of_mdeberta(model, 5)
-    else:
-        unfreeze_last_n_layers_of_transformers(model, 2)
-    log_parameters(model)
+    N_VISUAL_FREEZING_STEPS = 300_000
+    if step == 0:
+        freeze_model(model)
+        unfreeze_model(model.text_transformer)
+        log_parameters(model)
+    elif step == N_VISUAL_FREEZING_STEPS:
+        # Make sure no grad is kept in the model
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        freeze_model(model)
+        unfreeze_last_n_layers_of_transformers(model, 6)
+        log_parameters(model)
     return model
 
 

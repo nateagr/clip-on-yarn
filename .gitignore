@@ -25,6 +25,7 @@ MANIFEST
 
 # Environments
 .venv
+.env
 
 # mypy
 .mypy_cache/
@@ -37,3 +38,6 @@ dmypy.json
 
 # Wandb
 wandb
+
+# Notebooks
+*.ipynb

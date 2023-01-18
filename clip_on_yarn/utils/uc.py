@@ -74,7 +74,7 @@ class Taxonomy:
             "https://review.crto.in/gitweb?p=catalog/catalog-api.git;a=blob_plain;f=catalog-api"
             f"/src/main/resources/taxonomy/taxonomy-with-ids.{language.value}.txt"
         )
-        raw = requests.get(taxonomy_url).content.decode().strip()
+        raw = requests.get(taxonomy_url, timeout=10).content.decode().strip()
         categories_by_name: Dict[str, Category] = {}
         for line in raw.split("\n")[1:]:
             category = _extract_category(line, categories_by_name)

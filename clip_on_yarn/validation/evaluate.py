@@ -1,38 +1,37 @@
 """Evaluation scripts"""
 import gc
 import logging
+import os
 import pickle
 from contextlib import suppress
-from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import fsspec
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-from clip_on_yarn.config import CONFIG
-from clip_on_yarn.data.dataset import create_webdataset
-from clip_on_yarn.model.model import mCLIP
-from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
+import wandb
+import webdataset as wds
 from tf_yarn.pytorch.model_ckpt import _unwrap_model
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from clip_on_yarn.config import Config
+from clip_on_yarn.data.dataset import create_webdataset
+from clip_on_yarn.model.model import mCLIP
+from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
+
 logger = logging.getLogger()
-
-
-def extract_image_label(row, uc_id_to_idx_mapping):
-    """Extract image and target from the wds sample"""
-    label = uc_id_to_idx_mapping[row["metadata"]["uc_id"]]
-    return row["image_tensor"], label
+CONFIG = Config()
 
 
 def create_validation_dataloader_per_lang(
     webdataset_paths_per_lang: Dict[str, List[str]],
+    samples_per_lang: Dict[str, int],
     batch_size: int,
     num_workers: int,
-    uc_id_to_idx_mapping: Dict[int, int],
     image_transform_val: Compose,
     tokenizer: PreTrainedTokenizer,
 ) -> Dict[str, DataLoader]:
@@ -41,9 +40,9 @@ def create_validation_dataloader_per_lang(
     for lang in CAT_LANGUAGES_OF_INTEREST:
         dataloader_per_lang[lang] = create_validation_dataloader(
             webdataset_paths_per_lang[lang],
+            samples_per_lang[lang],
             batch_size,
             num_workers,
-            uc_id_to_idx_mapping,
             image_transform_val,
             tokenizer,
         )
@@ -52,19 +51,30 @@ def create_validation_dataloader_per_lang(
 
 def create_validation_dataloader(
     webdataset_paths: List[str],
+    num_samples: int,
     batch_size: int,
     num_workers: int,
-    uc_id_to_idx_mapping: Dict[int, int],
     image_transform_val: Compose,
     tokenizer: PreTrainedTokenizer,
 ) -> DataLoader:
     """Create validation dataloader"""
     url_paths = ["pipe:hdfs dfs -cat viewfs://root" + path for path in webdataset_paths]
-    extract_fb = partial(extract_image_label, uc_id_to_idx_mapping=uc_id_to_idx_mapping)
-    validation_dataset = create_webdataset(url_paths, image_transform_val, tokenizer, enable_metadata=True).map(
-        extract_fb
+    validation_dataset = create_webdataset(
+        url_paths,
+        image_transform_val,
+        tokenizer,
+        is_train=False,
+        enable_metadata=True,
+        num_samples=num_samples,
+        batch_size=batch_size,
     )
-    return DataLoader(validation_dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=False)
+    return wds.WebLoader(
+        validation_dataset,
+        batch_size=None,
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=True,
+    )
 
 
 def zero_shot_classifier(
@@ -75,7 +85,6 @@ def zero_shot_classifier(
 ) -> torch.Tensor:
     """Create class embeddings"""
     unwrapped_model = _unwrap_model(model)
-    unwrapped_model.eval()  # Make sure the model is in eval mode
     with torch.inference_mode():
         zeroshot_classifier = []
         for templates in templates_per_uc_id.values():
@@ -103,21 +112,49 @@ def accuracy(logits: torch.Tensor, target: torch.Tensor, topk: tuple = (1,)) -> 
 
 
 def evaluate(
+    model,
+    tokenizer,
+    validation_dataloader_per_lang,
+    device,
+    precision,
+    epoch,
+    enable_wandb,
+):
+    """Zero shot evaluation"""
+    rank = dist.get_rank()
+    if rank == 0 and CONFIG.valid_cfg:
+        model.eval()
+        logger.info("Starting zero shot evaluation")
+        # Recompute the new class embeddings
+        metrics = compute_metrics(
+            model,
+            tokenizer,
+            validation_dataloader_per_lang,
+            device,
+            precision,
+        )
+        logger.info("Finished zero_shot_eval")
+        logger.info(f"[{os.getpid()}]" f"zero shot evaluation metrics: {metrics}")
+        if enable_wandb:
+            for name, val in metrics.items():
+                name = "eval/" + name
+                wandb.log({name: val, "epoch": epoch})
+
+
+def zero_shot_metrics(
     model: mCLIP,
     classifier: torch.Tensor,
     dataloader: DataLoader,
     device: str,
     precision: str,
-    n_steps: Optional[int] = None,
 ) -> dict:
     """Evaluate the accuracies of the model"""
     unwrapped_model = _unwrap_model(model)
-    unwrapped_model.eval()  # Make sure the model is in eval mode
     autocast = torch.cuda.amp.autocast if precision == "amp" else suppress
     logger.info(f"Precision: {precision}")
     with torch.inference_mode():
         top1, top5, top10, n = 0.0, 0.0, 0.0, 0.0
-        for i, (images, target) in enumerate(dataloader):
+        for images, target in dataloader:
             images = images.to(device)
             target = target.to(device)
 
@@ -131,8 +168,6 @@ def evaluate(
             top5 += acc5
             top10 += acc10
             n += images.size(0)
-            if n_steps and i >= n_steps:
-                break
     top1 = top1 / n
     top5 = top5 / n
     top10 = top10 / n
@@ -145,7 +180,6 @@ def compute_metrics(
     dataloader_per_lang: Dict[str, DataLoader],
     device: str,
     precision: str,
-    steps_per_lang: Dict[str, int],
 ) -> Dict[str, Any]:
     """Compute validation metrics"""
     metrics = {}
@@ -155,15 +189,15 @@ def compute_metrics(
     for lang in CAT_LANGUAGES_OF_INTEREST:
         logger.info(f"Computing {lang} evaluation metrics")
         classifier = zero_shot_classifier(model, tokenizer, templates_per_uc_id_x_lang[lang], device)
-        lang_metrics = evaluate(
+        lang_metrics = zero_shot_metrics(
             model,
             classifier=classifier,
             dataloader=dataloader_per_lang[lang],
             device=device,
             precision=precision,
-            n_steps=steps_per_lang[lang],
         )
         metrics.update({f"{lang}_{k}": v for k, v in lang_metrics.items()})
+        # Clear memory
         del classifier
         torch.cuda.empty_cache()
         gc.collect()

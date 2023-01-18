@@ -5,16 +5,18 @@ from typing import Any, Dict, List, Union
 import fsspec
 import pyspark
 import torch
-from clip_on_yarn.config import CONFIG
-from clip_on_yarn.utils.translate import load_m2m100_12B
-from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST, Language, Taxonomy, filter_taxonomy_to_keep_last_level
 from easynmt import EasyNMT
 from ml_hadoop_experiment.common.spark_inference import SerializableObj
 from ml_hadoop_experiment.pytorch.spark_inference import with_inference_column_and_preprocessing
 from pyspark.sql.types import ArrayType, IntegerType, StringType, StructField, StructType
 from thx.hadoop import hdfs_cache
 from thx.hadoop.spark_config_builder import create_remote_spark_session
+import pandas as pd
+from clip_on_yarn.config import Config
+from clip_on_yarn.utils.translate import load_m2m100_12B
+from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST, Language, Taxonomy, filter_taxonomy_to_keep_last_level
 
+CONFIG = Config()
 TEMPLATES_HDFS_PATH = "viewfs://root/user/r.fabre/multi_lang_captions_per_category"
 TEMPLATES_EN = [
     lambda c: f"a photo of many {c}.",
@@ -156,7 +158,7 @@ def create_templates_per_lang_x_uc_id() -> None:
             "num_cores": 4,
         }
         ss = create_remote_spark_session(**spark_params)
-        df_templates = ss.read.parquet(TEMPLATES_HDFS_PATH).toPandas()
+        df_templates: pd.DataFrame = ss.read.parquet(TEMPLATES_HDFS_PATH).toPandas()
         ss.stop()
         templates_per_lang_x_uc_id: Dict[str, Dict[int, List[str]]] = {}
         for i, lang in enumerate(CAT_LANGUAGES_OF_INTEREST):
@@ -179,7 +181,7 @@ def create_uc_id_to_idx_mapping() -> None:
             "num_cores": 4,
         }
         ss = create_remote_spark_session(**spark_params)
-        df_templates = ss.read.parquet(TEMPLATES_HDFS_PATH).select("uc_id").toPandas()
+        df_templates: pd.DataFrame = ss.read.parquet(TEMPLATES_HDFS_PATH).select("uc_id").toPandas()
         ss.stop()
         uc_id_to_idx_mapping = {uc_id: idx for idx, uc_id in enumerate(df_templates.uc_id)}
         with fs.open(CONFIG.uc_id_to_idx_mapping_path, "wb") as f:

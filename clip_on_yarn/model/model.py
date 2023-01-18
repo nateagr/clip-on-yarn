@@ -7,25 +7,10 @@ import torch.nn.functional as F
 from multilingual_clip import Config_MCLIP
 from torch import nn
 from transformers import AutoModel, PreTrainedModel
+from typing import Union
+from open_clip.model import VisualTransformer
 
 logger = logging.getLogger()
-
-
-class mCLIP(nn.Module):
-    """Multilingual CLIP"""
-
-    def __init__(self, text_transformer: nn.Module, visual_transformer: nn.Module, logit_scale: nn.Parameter) -> None:
-        super().__init__()
-        self.text_transformer = text_transformer
-        self.visual_transformer = visual_transformer
-        self.logit_scale = logit_scale
-
-    def forward(self, image: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        text_features = self.text_transformer(input_ids, attention_mask)
-        text_features = F.normalize(text_features, dim=-1)
-        image_features = self.visual_transformer(image)
-        image_features = F.normalize(image_features, dim=-1)
-        return image_features, text_features, self.logit_scale.exp()
 
 
 class LinearProjection(PreTrainedModel):  # pylint: disable=abstract-method
@@ -82,3 +67,25 @@ class mDeBERTaTextEncoder(torch.nn.Module):
         embs = (embs * attention_mask.unsqueeze(2)).sum(dim=1) / attention_mask.sum(dim=1)[:, None]
         text_features = self.linear_transformation(embs)
         return text_features
+
+
+class mCLIP(nn.Module):
+    """Multilingual CLIP"""
+
+    def __init__(
+        self,
+        text_transformer: Union[XMLRoBERTaLargeTextEncoder, mDeBERTaTextEncoder],
+        visual_transformer: VisualTransformer,
+        logit_scale: nn.Parameter,
+    ) -> None:
+        super().__init__()
+        self.text_transformer = text_transformer
+        self.visual_transformer = visual_transformer
+        self.logit_scale = logit_scale
+
+    def forward(self, image: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor):
+        text_features = self.text_transformer(input_ids, attention_mask)
+        text_features = F.normalize(text_features, dim=-1)
+        image_features = self.visual_transformer(image)
+        image_features = F.normalize(image_features, dim=-1)
+        return image_features, text_features, self.logit_scale.exp()

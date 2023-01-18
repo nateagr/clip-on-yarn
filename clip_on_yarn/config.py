@@ -1,11 +1,11 @@
 """Configuration"""
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from tf_yarn.pytorch import NodeLabel, TaskSpec
 
-from clip_on_yarn.data.dataset import get_number_of_samples
-from clip_on_yarn.model.model import mDeBERTaTextEncoder
+from clip_on_yarn.model.model import XMLRoBERTaLargeTextEncoder
+from clip_on_yarn.data.utils import SharedEpoch
 
 
 class SingletonMetaclass(type):
@@ -24,39 +24,41 @@ class SingletonMetaclass(type):
 class TrainingConfig:
     """Training parameters"""
 
-    webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/mclip_finetuning/train"  # Path to webdataset
+    webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/catalog_filtered_0.2_wds/train"  # Path to webdataset
     batch_size: int = 32
     num_workers: int = 8
     n_workers_per_executor: int = 2
-    n_epochs: int = 5
-    precision: str = "fp32"
-    learning_rate: float = 1e-5
+    n_epochs: int = 50
+    precision: str = "amp"
+    learning_rate: float = 5e-8
     beta1: float = 0.9
     beta2: float = 0.98
     eps: float = 1.0e-6
     weight_decay: float = 0.2
-    warmup: int = 625_000  # number of steps to warm up, 1/4 of all the data
-    aggregate: bool = True  # whether to gather all image and text embeddings
-    nb_of_samples: int = get_number_of_samples("/user/cailimage/dev/users/r.fabre/mclip_finetuning/train")
-    accumulate_grad_batches: int = 64  # 2048 samples per batch per per GPU
+    warmup: int = 0
+    accumulate_grad_batches: int = 32  # accumulate_grad_batches*batch_size samples per batch per GPU
+    dataset_resampled: bool = True
+    num_samples: int = 90_000_000  # 1/10 of all training samples
+    num_batches: int = 0  # Placeholder, will be updated in accordance with the total training size
+    shared_epoch: SharedEpoch = field(default_factory=SharedEpoch)
 
 
 @dataclass
 class ValidationConfig:
     """Validation parameters"""
 
-    webdataset_paths_per_lang: Dict[str, List[str]] = field(default_factory=dict)
-    steps_per_lang: Dict[str, int] = field(default_factory=dict)
+    webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/catalog_filtered_0.2_wds/valid"
     max_samples: int = 50_000
-    batch_size: int = 32
-    num_workers: int = 0
-    period_in_steps: int = 300_000  # validation period in steps
+    batch_size: int = 64
+    num_workers: int = 8
 
 
 class Config(metaclass=SingletonMetaclass):
     """Singleton containing all the configuration"""
 
     def __init__(self) -> None:
+        self.seed = 42
+        self.start_epoch = 0  # used to checkpoint data in the creation of the wds
         # Model training configuration
         self.train_cfg: TrainingConfig = TrainingConfig()
 
@@ -71,18 +73,24 @@ class Config(metaclass=SingletonMetaclass):
         }
 
         # Directory where model is checkpointed
-        self.model_dir: Optional[str] = "viewfs://root/user/r.fabre/models/mdeberta_finetuned"
+        self.ckpt_dir: Optional[
+            str
+        ] = "viewfs://root/user/r.fabre/models/xml_roberta_large_finetuned_with_filtered_data"
 
         # Directory where profiling results will be written
         self.profiling_hdfs_dir: Optional[str] = None
 
         # Model paths
-        self.text_transformer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mdeberta/model"
+        self.text_transformer_hdfs_path: str = (
+            "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/text_transformer/model"
+        )
         self.visual_transformer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/visual_transformer/vit_b_16_plus_240_laion400m_e32.pt"  # pylint: disable=line-too-long
-        self.tokenizer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mdeberta/tokenizer"
+        self.tokenizer_hdfs_path: str = (
+            "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/text_transformer/tokenizer"
+        )
 
         # Text model
-        self.text_model = mDeBERTaTextEncoder
+        self.text_model = XMLRoBERTaLargeTextEncoder
 
         # Yarn config
         self.yarn_worker_spec: TaskSpec = TaskSpec(memory=72 * 2**10, vcores=80, instances=10, label=NodeLabel.GPU)
@@ -102,6 +110,3 @@ class Config(metaclass=SingletonMetaclass):
 
     def __repr__(self) -> str:
         return str(self.__dict__)
-
-
-CONFIG = Config()

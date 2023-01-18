@@ -40,8 +40,14 @@ def get_adamw_optimize(
     eps: float,
 ) -> Optimizer:
     """Setup and return the AdamW optimizer"""
-    exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or "logit_scale" in n
-    include = lambda n, p: not exclude(n, p)
+    exclude = (
+        lambda n, p: p.ndim < 2  # pylint: disable=unnecessary-lambda-assignment
+        or "bn" in n
+        or "ln" in n
+        or "bias" in n
+        or "logit_scale" in n
+    )
+    include = lambda n, p: not exclude(n, p)  # pylint: disable=unnecessary-lambda-assignment
 
     named_parameters = list(model.named_parameters())
     gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]

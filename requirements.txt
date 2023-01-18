@@ -4,7 +4,7 @@ pyarrow
 pillow
 tf-yarn
 wandb==0.12.11
-webdataset==0.1.103
+webdataset>=0.2.5
 nltk
 fasttext==0.9.1
 easynmt

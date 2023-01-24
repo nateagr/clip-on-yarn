@@ -30,7 +30,7 @@ class TrainingConfig:
     n_workers_per_executor: int = 2
     n_epochs: int = 50
     precision: str = "amp"
-    learning_rate: float = 5e-8
+    learning_rate: float = 8e-4
     beta1: float = 0.9
     beta2: float = 0.98
     eps: float = 1.0e-6
@@ -40,7 +40,7 @@ class TrainingConfig:
     dataset_resampled: bool = True
     num_samples: int = 90_000_000  # 1/10 of all training samples
     num_batches: int = 0  # Placeholder, will be updated in accordance with the total training size
-    shared_epoch: SharedEpoch = field(default_factory=SharedEpoch)
+    shared_epoch: SharedEpoch = None
 
 
 @dataclass
@@ -75,7 +75,7 @@ class Config(metaclass=SingletonMetaclass):
         # Directory where model is checkpointed
         self.ckpt_dir: Optional[
             str
-        ] = "viewfs://root/user/r.fabre/models/xml_roberta_large_finetuned_with_filtered_data"
+        ] = "viewfs://root/user/r.fabre/models/lip_xml_roberta_large_finetuned_with_filtered_data"
 
         # Directory where profiling results will be written
         self.profiling_hdfs_dir: Optional[str] = None

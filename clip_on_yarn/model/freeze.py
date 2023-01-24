@@ -16,8 +16,8 @@ def _unfreeze_last_n_layers_of_vit(model: mCLIP, n: int) -> None:
 def _unfreeze_last_n_layers_of_xml_roberta_large(model: mCLIP, n: int) -> None:
     unfreeze_last_n_layers(model.text_transformer.transformer.encoder, n, num_layers=24)
     # Unfreeze layers after transformer
-    unfreeze_layer(model.text_transformer.transformer.pooler, "dense")
-    unfreeze_layer(model.text_transformer, "linear_transformation")
+    unfreeze_model(model.text_transformer.transformer.pooler)
+    unfreeze_model(model.text_transformer.linear_transformation)
 
 
 def _unfreeze_last_n_layers_of_mdeberta(model: mCLIP, n: int) -> None:
@@ -50,10 +50,14 @@ def apply_freezing_strategy(model: mCLIP, epoch: int) -> mCLIP:
     if epoch == 0:
         freeze_model(model)
         unfreeze_model(model.text_transformer)
+        model.logit_scale.requires_grad = True
         log_parameters(model)
-    if epoch == N_VISUAL_FREEZING_EPOCHS:
+    if epoch >= N_VISUAL_FREEZING_EPOCHS:
         freeze_model(model)
-        unfreeze_last_n_layers_of_transformers(model, 8)
+        unfreeze_model(model.text_transformer.transformer.encoder)
+        unfreeze_model(model.text_transformer.transformer.pooler)
+        unfreeze_model(model.text_transformer.linear_transformation)
+        model.logit_scale.requires_grad = True
         log_parameters(model)
     return model
 

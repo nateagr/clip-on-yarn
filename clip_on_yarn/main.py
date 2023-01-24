@@ -101,7 +101,7 @@ def training_loop(
     if ckpt_dir:
         ckpt = model_ckpt.load_latest_ckpt(ckpt_dir, model, optimizer, device)
         if ckpt:
-            start_epoch = ckpt["epoch"]
+            start_epoch = ckpt["epoch"] + 1
             logger.info(f"Successfully loaded checkpoint from {ckpt_dir}")
             logger.info(f"Resuming training at epoch {start_epoch}")
             if scaler is not None and "scaler" in ckpt:

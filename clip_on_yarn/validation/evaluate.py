@@ -13,15 +13,14 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
 import webdataset as wds
-from tf_yarn.pytorch.model_ckpt import _unwrap_model
-from torch.utils.data import DataLoader
-from torchvision.transforms import Compose
-from transformers.tokenization_utils import PreTrainedTokenizer
-
 from clip_on_yarn.config import Config
 from clip_on_yarn.data.dataset import create_webdataset
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.utils.uc import CAT_LANGUAGES_OF_INTEREST
+from tf_yarn.pytorch.model_ckpt import _unwrap_model
+from torch.utils.data import DataLoader
+from torchvision.transforms import Compose
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 logger = logging.getLogger()
 CONFIG = Config()
@@ -73,7 +72,7 @@ def create_validation_dataloader(
         batch_size=None,
         shuffle=False,
         num_workers=num_workers,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
 
@@ -201,4 +200,6 @@ def compute_metrics(
         del classifier
         torch.cuda.empty_cache()
         gc.collect()
+    del templates_per_uc_id_x_lang
+    gc.collect()
     return metrics

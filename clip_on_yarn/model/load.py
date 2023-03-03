@@ -2,13 +2,14 @@
 import os
 
 import fsspec
-from clip_on_yarn.config import CONFIG
+from clip_on_yarn.config import Config
 from clip_on_yarn.model.model import mCLIP
 from open_clip.factory import load_checkpoint
 from open_clip.model import CLIP
 from open_clip.transform import image_transform
 from transformers import AutoTokenizer
 
+CONFIG = Config()
 CLIP_MODEL_CONFIG = {
     "embed_dim": 640,
     "vision_cfg": {"image_size": 240, "layers": 12, "width": 896, "patch_size": 16},
@@ -30,7 +31,7 @@ def _load_visual_transformer_and_transformers(visual_transformer_hdfs_path: str,
 
 
 def _load_text_transformer_and_tokenizer(text_transformer_hdfs_path: str, tokenizer_hdfs_path: str, download_root: str):
-    """Load texst transformer and tokenizer from hdfs"""
+    """Load text transformer and tokenizer from hdfs"""
     # Load text transformer
     model_name = os.path.basename(text_transformer_hdfs_path)
     local_path = os.path.join(download_root, model_name)

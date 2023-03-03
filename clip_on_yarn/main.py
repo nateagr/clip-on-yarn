@@ -1,4 +1,5 @@
 """Main script"""
+import gc
 import logging
 import os
 import uuid
@@ -6,23 +7,28 @@ from functools import partial
 
 import fsspec
 import wandb
-from tf_yarn.pytorch import DataLoaderArgs, PytorchExperiment, model_ckpt, run_on_yarn
+from tf_yarn.pytorch import (DataLoaderArgs, PytorchExperiment, model_ckpt,
+                             run_on_yarn)
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from clip_on_yarn.config import Config
-from clip_on_yarn.data.dataset import create_webdataset, generate_wds_paths_and_samples_per_lang, get_number_of_samples
+from clip_on_yarn.data.dataset import (create_webdataset,
+                                       generate_wds_paths_and_samples_per_lang,
+                                       get_number_of_samples)
 from clip_on_yarn.model.load import load_model_tokenizer_and_transforms
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.optimizer import cosine_lr, get_adamw_optimize
-from clip_on_yarn.train import train_one_epoch
+from clip_on_yarn.train import get_start_epoch, train_one_epoch
 from clip_on_yarn.utils.hdfs import upload_dir
 from clip_on_yarn.utils.profiler import create_profiler
 from clip_on_yarn.utils.seed import seed_everything
-from clip_on_yarn.validation.evaluate import create_validation_dataloader_per_lang, evaluate
-from clip_on_yarn.validation.templates import create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping
+from clip_on_yarn.validation.evaluate import (
+    create_validation_dataloader_per_lang, evaluate)
+from clip_on_yarn.validation.templates import (
+    create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping)
 
 logger = logging.getLogger()
 
@@ -35,7 +41,6 @@ def training_loop(
     tb_writer,  # pylint: disable=unused-argument
     image_transform_val: Compose,
     tokenizer: PreTrainedTokenizer,
-    start_epoch: int = 0,
     **kwds,
 ):
     """Training loop"""
@@ -97,16 +102,15 @@ def training_loop(
 
     if precision in ("amp", "fp32"):
         model.module.float()
-
+    start_epoch = get_start_epoch()
     if ckpt_dir:
         ckpt = model_ckpt.load_latest_ckpt(ckpt_dir, model, optimizer, device)
         if ckpt:
-            start_epoch = ckpt["epoch"] + 1
             logger.info(f"Successfully loaded checkpoint from {ckpt_dir}")
             logger.info(f"Resuming training at epoch {start_epoch}")
             if scaler is not None and "scaler" in ckpt:
                 scaler.load_state_dict(ckpt["scaler"])
-
+            del ckpt
     profiler = None
     if profiling_hdfs_dir:
         profiling_local_dir = f"./{str(uuid.uuid4())}"
@@ -170,6 +174,7 @@ def get_experiment_fn(
         num_samples_per_epoch = (
             config.train_cfg.num_samples if config.train_cfg.num_samples else get_number_of_samples(trainset_base_path)
         )
+        start_epoch = get_start_epoch()
         webdataset = create_webdataset(
             url_trainset_paths,
             image_preprocessing_train,
@@ -177,7 +182,7 @@ def get_experiment_fn(
             is_train=True,
             num_samples=num_samples_per_epoch,
             batch_size=config.train_cfg.batch_size,
-            epoch=config.start_epoch,
+            epoch=start_epoch,
         )
 
         return PytorchExperiment(
@@ -186,7 +191,6 @@ def get_experiment_fn(
                 training_loop,
                 image_transform_val=image_preprocessing_val,
                 tokenizer=tokenizer,
-                start_epoch=config.start_epoch,
                 **kwds,
             ),
             train_dataset=webdataset,

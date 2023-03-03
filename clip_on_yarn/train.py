@@ -10,6 +10,8 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn
 import wandb
+from cluster_pack import filesystem
+from tf_yarn.pytorch.model_ckpt import find_latest_ckpt
 from torch.utils.data import DataLoader
 
 from clip_on_yarn.config import Config
@@ -19,6 +21,17 @@ from clip_on_yarn.model.model import mCLIP
 
 logger = logging.getLogger()
 CONFIG = Config()
+
+
+def get_start_epoch() -> int:
+    start_epoch = 0
+    if CONFIG.ckpt_dir:
+        latest_ckpt = find_latest_ckpt(CONFIG.ckpt_dir)
+        if not latest_ckpt:
+            return start_epoch
+        start_epoch = int(latest_ckpt.split("/")[-1].split(".")[0].split("_")[-1])
+        start_epoch += 1
+    return start_epoch
 
 
 def backward(total_loss, scaler):

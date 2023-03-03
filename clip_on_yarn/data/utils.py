@@ -12,5 +12,4 @@ class SharedEpoch:
         self.shared_epoch.value = epoch
 
     def get_value(self):
-
         return self.shared_epoch.value

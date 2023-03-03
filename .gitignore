@@ -41,3 +41,4 @@ wandb
 
 # Notebooks
 *.ipynb
+*.ipynb_checkpoints

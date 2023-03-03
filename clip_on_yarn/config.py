@@ -4,8 +4,8 @@ from typing import Any, Dict, Optional
 
 from tf_yarn.pytorch import NodeLabel, TaskSpec
 
-from clip_on_yarn.model.model import XMLRoBERTaLargeTextEncoder
 from clip_on_yarn.data.utils import SharedEpoch
+from clip_on_yarn.model.model import mDeBERTaTextEncoder
 
 
 class SingletonMetaclass(type):
@@ -29,14 +29,14 @@ class TrainingConfig:
     num_workers: int = 8
     n_workers_per_executor: int = 2
     n_epochs: int = 50
-    precision: str = "amp"
-    learning_rate: float = 8e-4
+    precision: str = "fp32"
+    learning_rate: float = 5e-6
     beta1: float = 0.9
     beta2: float = 0.98
     eps: float = 1.0e-6
     weight_decay: float = 0.2
     warmup: int = 0
-    accumulate_grad_batches: int = 32  # accumulate_grad_batches*batch_size samples per batch per GPU
+    accumulate_grad_batches: int = 24  # accumulate_grad_batches*batch_size samples per batch per GPU
     dataset_resampled: bool = True
     num_samples: int = 90_000_000  # 1/10 of all training samples
     num_batches: int = 0  # Placeholder, will be updated in accordance with the total training size
@@ -58,7 +58,6 @@ class Config(metaclass=SingletonMetaclass):
 
     def __init__(self) -> None:
         self.seed = 42
-        self.start_epoch = 0  # used to checkpoint data in the creation of the wds
         # Model training configuration
         self.train_cfg: TrainingConfig = TrainingConfig()
 
@@ -73,27 +72,21 @@ class Config(metaclass=SingletonMetaclass):
         }
 
         # Directory where model is checkpointed
-        self.ckpt_dir: Optional[
-            str
-        ] = "viewfs://root/user/r.fabre/models/lip_xml_roberta_large_finetuned_with_filtered_data"
+        self.ckpt_dir: Optional[str] = "viewfs://root/user/r.fabre/models/mdeberta_finetuned"
 
         # Directory where profiling results will be written
         self.profiling_hdfs_dir: Optional[str] = None
 
         # Model paths
-        self.text_transformer_hdfs_path: str = (
-            "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/text_transformer/model"
-        )
+        self.text_transformer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mdeberta/model"
         self.visual_transformer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/visual_transformer/vit_b_16_plus_240_laion400m_e32.pt"  # pylint: disable=line-too-long
-        self.tokenizer_hdfs_path: str = (
-            "viewfs://root/user/r.fabre/models/mclip_xlm_roberta_large_vit_b_16_plus/text_transformer/tokenizer"
-        )
+        self.tokenizer_hdfs_path: str = "viewfs://root/user/r.fabre/models/mdeberta/tokenizer"
 
         # Text model
-        self.text_model = XMLRoBERTaLargeTextEncoder
+        self.text_model = mDeBERTaTextEncoder
 
         # Yarn config
-        self.yarn_worker_spec: TaskSpec = TaskSpec(memory=72 * 2**10, vcores=80, instances=10, label=NodeLabel.GPU)
+        self.yarn_worker_spec: TaskSpec = TaskSpec(memory=72 * 2**10, vcores=80, instances=14, label=NodeLabel.GPU)
 
         # Class template path
         self.templates_per_lang_x_uc_id_path: str = "/user/r.fabre/clip_on_yarn/templates_per_lang_x_uc_id.pkl"

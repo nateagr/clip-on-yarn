@@ -1,7 +1,8 @@
 """Torch utils"""
 import logging
-from clip_on_yarn.model.model import mCLIP, XMLRoBERTaLargeTextEncoder, mDeBERTaTextEncoder
 from typing import Union
+
+from clip_on_yarn.model.model import XMLRoBERTaLargeTextEncoder, mCLIP, mDeBERTaTextEncoder
 from torch import nn
 
 logger = logging.getLogger()
@@ -54,9 +55,7 @@ def apply_freezing_strategy(model: mCLIP, epoch: int) -> mCLIP:
         log_parameters(model)
     if epoch >= N_VISUAL_FREEZING_EPOCHS:
         freeze_model(model)
-        unfreeze_model(model.text_transformer.transformer.encoder)
-        unfreeze_model(model.text_transformer.transformer.pooler)
-        unfreeze_model(model.text_transformer.linear_transformation)
+        unfreeze_model(model.text_transformer)
         model.logit_scale.requires_grad = True
         log_parameters(model)
     return model

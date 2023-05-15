@@ -1,4 +1,6 @@
+"""HDFS utils"""
 import os
+
 from cluster_pack import filesystem
 
 

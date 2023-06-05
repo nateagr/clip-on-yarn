@@ -3,7 +3,7 @@ torchvision
 clip-anytorch
 pyarrow
 pillow
-tf-yarn
+tf-yarn<0.7.0
 wandb
 webdataset==0.1.103
 tqdm

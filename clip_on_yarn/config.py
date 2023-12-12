@@ -25,22 +25,23 @@ class TrainingConfig:
     """Training parameters"""
 
     webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/catalog_filtered_0.2_wds/train"  # Path to webdataset
-    batch_size: int = 32
+    batch_size: int = 128
     num_workers: int = 8
     n_workers_per_executor: int = 2
     n_epochs: int = 50
-    precision: str = "fp32"
+    precision: str = "amp"
     learning_rate: float = 5e-6
     beta1: float = 0.9
     beta2: float = 0.98
     eps: float = 1.0e-6
     weight_decay: float = 0.2
     warmup: int = 0
-    accumulate_grad_batches: int = 24  # accumulate_grad_batches*batch_size samples per batch per GPU
+    accumulate_grad_batches: int = 6  # accumulate_grad_batches*batch_size samples per batch per GPU
     dataset_resampled: bool = True
     num_samples: int = 90_000_000  # 1/10 of all training samples
     num_batches: int = 0  # Placeholder, will be updated in accordance with the total training size
     shared_epoch: SharedEpoch = None
+    patch_dropout: float = 0
 
 
 @dataclass
@@ -49,7 +50,7 @@ class ValidationConfig:
 
     webdataset_dir: str = "/user/cailimage/dev/users/r.fabre/catalog_filtered_0.2_wds/valid"
     max_samples: int = 50_000
-    batch_size: int = 64
+    batch_size: int = 128
     num_workers: int = 8
 
 

@@ -1,14 +1,17 @@
 """Models used in mCLIP"""
 import logging
 import os
+from typing import Union
 
 import torch
 import torch.nn.functional as F
 from multilingual_clip import Config_MCLIP
+
+from open_clip.model import VisualTransformer
 from torch import nn
 from transformers import AutoModel, PreTrainedModel
-from typing import Union
-from open_clip.model import VisualTransformer
+
+from clip_on_yarn.model.mdeberta import DebertaV2Model
 
 logger = logging.getLogger()
 
@@ -58,7 +61,7 @@ class mDeBERTaTextEncoder(torch.nn.Module):
 
     def __init__(self, transformer_path: str):
         super().__init__()
-        self.transformer = AutoModel.from_pretrained(transformer_path, torch_dtype=torch.float16)
+        self.transformer = DebertaV2Model.from_pretrained(transformer_path)
         self.linear_transformation = torch.nn.Linear(in_features=768, out_features=640)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):

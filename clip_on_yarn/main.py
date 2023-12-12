@@ -6,18 +6,18 @@ import uuid
 from functools import partial
 
 import fsspec
+import numpy as np
+import torch
 import wandb
-from tf_yarn.pytorch import (DataLoaderArgs, PytorchExperiment, model_ckpt,
-                             run_on_yarn)
+from tf_yarn.pytorch import DataLoaderArgs, PytorchExperiment, model_ckpt, run_on_yarn
+from torch import nn
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from clip_on_yarn.config import Config
-from clip_on_yarn.data.dataset import (create_webdataset,
-                                       generate_wds_paths_and_samples_per_lang,
-                                       get_number_of_samples)
+from clip_on_yarn.data.dataset import create_webdataset, generate_wds_paths_and_samples_per_lang, get_number_of_samples
 from clip_on_yarn.model.load import load_model_tokenizer_and_transforms
 from clip_on_yarn.model.model import mCLIP
 from clip_on_yarn.optimizer import cosine_lr, get_adamw_optimize
@@ -25,10 +25,8 @@ from clip_on_yarn.train import get_start_epoch, train_one_epoch
 from clip_on_yarn.utils.hdfs import upload_dir
 from clip_on_yarn.utils.profiler import create_profiler
 from clip_on_yarn.utils.seed import seed_everything
-from clip_on_yarn.validation.evaluate import (
-    create_validation_dataloader_per_lang, evaluate)
-from clip_on_yarn.validation.templates import (
-    create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping)
+from clip_on_yarn.validation.evaluate import create_validation_dataloader_per_lang, evaluate
+from clip_on_yarn.validation.templates import create_templates_per_lang_x_uc_id, create_uc_id_to_idx_mapping
 
 logger = logging.getLogger()
 
@@ -195,7 +193,7 @@ def get_experiment_fn(
             ),
             train_dataset=webdataset,
             dataloader_args=DataLoaderArgs(
-                batch_size=None, num_workers=config.train_cfg.num_workers, persistent_workers=True, drop_last=False
+                batch_size=None, num_workers=config.train_cfg.num_workers, persistent_workers=False, drop_last=False
             ),
             n_workers_per_executor=config.train_cfg.n_workers_per_executor,
         )
@@ -205,19 +203,19 @@ def get_experiment_fn(
 
 if __name__ == "__main__":
     # Create artifacts
-    CONFIG = Config()
+    config = Config()
     create_templates_per_lang_x_uc_id()
     create_uc_id_to_idx_mapping()
 
     # Launch training
     run_on_yarn(
         experiment_fn=get_experiment_fn(
-            CONFIG.text_transformer_hdfs_path,
-            CONFIG.visual_transformer_hdfs_path,
-            CONFIG.tokenizer_hdfs_path,
-            CONFIG.train_cfg.webdataset_dir,
+            config.text_transformer_hdfs_path,
+            config.visual_transformer_hdfs_path,
+            config.tokenizer_hdfs_path,
+            config.train_cfg.webdataset_dir,
         ),
-        task_specs={"worker": CONFIG.yarn_worker_spec},
+        task_specs={"worker": config.yarn_worker_spec},
         queue="ml-gpu",
         pyenv_zip_path="viewfs://root/user/r.fabre/envs/.venv.pex.zip",
     )

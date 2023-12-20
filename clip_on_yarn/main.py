@@ -135,13 +135,14 @@ def training_loop(
             epoch,
             enable_wandb,
         )
-        # Saving the model
-        if ckpt_dir:
-            others = {}
-            if scaler:
-                others["scaler"] = scaler.state_dict()
-            model_ckpt.save_ckpt(ckpt_dir, model, optimizer, epoch, **others)
-    if enable_wandb:
+        if rank == 0:
+            # Saving the model
+            if ckpt_dir:
+                others = {}
+                if scaler:
+                    others["scaler"] = scaler.state_dict()
+                model_ckpt.save_ckpt(ckpt_dir, model, optimizer, epoch, **others)
+    if rank == 0 and enable_wandb:
         wandb.finish()
 
     if profiling_hdfs_dir and profiling_local_dir:
